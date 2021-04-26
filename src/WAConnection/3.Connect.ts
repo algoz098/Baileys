@@ -191,7 +191,7 @@ export class WAConnection extends Base {
                 check if it's been a suspicious amount of time since the server responded with our last seen
                 it could be that the network is down
             */
-            if (diff > KEEP_ALIVE_INTERVAL_MS + 5000) this.unexpectedDisconnect(DisconnectReason.lost)
+            if (diff > KEEP_ALIVE_INTERVAL_MS + 75000) this.unexpectedDisconnect(DisconnectReason.lost)
             else if (this.conn) this.send('?,,') // if its all good, send a keep alive request
         }, KEEP_ALIVE_INTERVAL_MS)
     }

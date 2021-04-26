@@ -7,7 +7,7 @@ import { URL } from 'url'
 export const WS_URL = 'wss://web.whatsapp.com/ws'
 export const DEFAULT_ORIGIN = 'https://web.whatsapp.com'
 
-export const KEEP_ALIVE_INTERVAL_MS = 90 * 1000
+export const KEEP_ALIVE_INTERVAL_MS = 20 * 1000
 export const WA_DEFAULT_EPHEMERAL = 7 * 24 * 60 * 60
 
 // export the WAMessage Prototypes
