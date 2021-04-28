@@ -187,6 +187,7 @@ export class WAConnection extends Base {
             const diff = new Date().getTime() - this.lastSeen.getTime()
 
             this.logger.info(`ping ${diff}`)
+            this.emit('latency', { latency: diff, lastSeen: this.lastSeen.getTime() })
             /*
                 check if it's been a suspicious amount of time since the server responded with our last seen
                 it could be that the network is down
