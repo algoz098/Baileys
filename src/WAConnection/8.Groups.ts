@@ -88,8 +88,7 @@ export class WAConnection extends Base {
             metadata = await this.groupMetadata (gid)
             this.logger.warn (`group ID switched from ${gid} to ${response.gid}`)
         }
-        await this.chatAdd (response.gid, title)
-        this.chats.get(response.gid).metadata = metadata
+        await this.chatAdd(response.gid, title, { metadata })
         return response
     }
     /**
