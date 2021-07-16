@@ -7,8 +7,8 @@ import { URL } from 'url'
 export const WS_URL = 'wss://web.whatsapp.com/ws'
 export const DEFAULT_ORIGIN = 'https://web.whatsapp.com'
 
-export const KEEP_ALIVE_INTERVAL_MS = 20*1000
-export const WA_DEFAULT_EPHEMERAL = 7*24*60*60
+export const KEEP_ALIVE_INTERVAL_MS = 20 * 1000
+export const WA_DEFAULT_EPHEMERAL = 7 * 24 * 60 * 60
 
 // export the WAMessage Prototypes
 export { proto as WAMessageProto }
@@ -69,7 +69,7 @@ export interface WALocationMessage {
 export const WA_MESSAGE_STUB_TYPES = function () {
     const types = WA_MESSAGE_STUB_TYPE
     const dict: Record<number, string> = {}
-    Object.keys(types).forEach(element => dict[ types[element] ] = element)
+    Object.keys(types).forEach(element => dict[types[element]] = element)
     return dict
 }()
 
@@ -77,18 +77,18 @@ export class BaileysError extends Error {
     status?: number
     context: any
 
-    constructor (message: string, context: any, stack?: string) {
-        super (message)
+    constructor(message: string, context: any, stack?: string) {
+        super(message)
         this.name = 'BaileysError'
         this.status = context.status
         this.context = context
-        if(stack) {
+        if (stack) {
             this.stack = stack
         }
     }
 }
-export const TimedOutError = (stack?: string) => new BaileysError ('timed out', { status: 408 }, stack)
-export const CancelledError = (stack?: string) => new BaileysError ('cancelled', { status: 500 }, stack)
+export const TimedOutError = (stack?: string) => new BaileysError('timed out', { status: 408 }, stack)
+export const CancelledError = (stack?: string) => new BaileysError('cancelled', { status: 500 }, stack)
 
 export interface WAQuery {
     json: any[] | WANode
@@ -149,25 +149,25 @@ export type WAConnectionState = 'open' | 'connecting' | 'close'
 export const UNAUTHORIZED_CODES = [401, 419]
 /** Types of Disconnect Reasons */
 export enum DisconnectReason {
-  /** The connection was closed intentionally */
-  intentional = 'intentional',
-  /** The connection was terminated either by the client or server */
-  close = 'close',
-  /** The connection was lost, called when the server stops responding to requests */
-  lost = 'lost',
-  /** When WA Web is opened elsewhere & this session is disconnected */
-  replaced = 'replaced',
-  /** The credentials for the session have been invalidated, i.e. logged out either from the phone or WA Web */
-  invalidSession = 'invalid_session',
-  /** Received a 500 result in a query -- something has gone very wrong */
-  badSession = 'bad_session',
-  /** No idea, can be a sign of log out too */
-  unknown = 'unknown',
-  /** Well, the connection timed out */
-  timedOut = 'timed out'
+    /** The connection was closed intentionally */
+    intentional = 'intentional',
+    /** The connection was terminated either by the client or server */
+    close = 'close',
+    /** The connection was lost, called when the server stops responding to requests */
+    lost = 'lost',
+    /** When WA Web is opened elsewhere & this session is disconnected */
+    replaced = 'replaced',
+    /** The credentials for the session have been invalidated, i.e. logged out either from the phone or WA Web */
+    invalidSession = 'invalid_session',
+    /** Received a 500 result in a query -- something has gone very wrong */
+    badSession = 'bad_session',
+    /** No idea, can be a sign of log out too */
+    unknown = 'unknown',
+    /** Well, the connection timed out */
+    timedOut = 'timed out'
 }
 export interface MediaConnInfo {
-    auth: string 
+    auth: string
     ttl: number
     hosts: {
         hostname: string
@@ -190,7 +190,7 @@ export interface AuthenticationCredentialsBase64 {
 }
 export interface AuthenticationCredentialsBrowser {
     WABrowserId: string
-    WASecretBundle: {encKey: string, macKey: string} | string
+    WASecretBundle: { encKey: string, macKey: string } | string
     WAToken1: string
     WAToken2: string
 }
@@ -211,9 +211,9 @@ export interface WAGroupMetadata {
     descOwner?: string
     descId?: string
     /** is set when the group only allows admins to change group settings */
-    restrict?: 'true' | 'false' 
+    restrict?: 'true' | 'false'
     /** is set when the group only allows admins to write messages */
-    announce?: 'true' | 'false' 
+    announce?: 'true' | 'false'
     // Baileys modified array
     participants: WAGroupParticipant[]
 }
@@ -263,7 +263,7 @@ export interface WAChat {
     eph_setting_ts?: string
     /** how long each message lasts for */
     ephemeral?: string
-    
+
     // Baileys added properties
     messages: KeyedDB<WAMessage, string>
     imgUrl?: string
@@ -354,14 +354,14 @@ export const MessageTypeProto = {
     [MessageType.document]: proto.DocumentMessage,
 }
 export enum ChatModification {
-    archive='archive',
-    unarchive='unarchive',
-    pin='pin',
-    unpin='unpin',
-    mute='mute',
-    unmute='unmute',
-    delete='delete',
-    clear='clear'
+    archive = 'archive',
+    unarchive = 'unarchive',
+    pin = 'pin',
+    unpin = 'unpin',
+    mute = 'mute',
+    unmute = 'unmute',
+    delete = 'delete',
+    clear = 'clear'
 }
 export const HKDFInfoKeys = {
     [MessageType.image]: 'WhatsApp Image Keys',
@@ -401,7 +401,7 @@ export interface MessageOptions {
     /** (for media messages) file name for the media */
     filename?: string
     /** For audio messages, if set to true, will send as a `voice note` */
-    ptt?: boolean 
+    ptt?: boolean
     /** For image or video messages, if set to true, will send as a `viewOnceMessage` */
     viewOnce?: boolean 
     /** Optional agent for media uploads */
@@ -423,7 +423,7 @@ export interface MessageOptions {
 export interface WABroadcastListInfo {
     status: number
     name: string
-    recipients?: {id: string}[]
+    recipients?: { id: string }[]
 }
 export interface WAUrlInfo {
     'canonical-url': string
@@ -438,8 +438,8 @@ export interface WAProfilePictureChange {
     eurl: string
 }
 export interface MessageInfo {
-    reads: {jid: string, t: string}[]
-    deliveries: {jid: string, t: string}[]
+    reads: { jid: string, t: string }[]
+    deliveries: { jid: string, t: string }[]
 }
 export interface WAMessageStatusUpdate {
     from: string
@@ -493,11 +493,11 @@ export const MimetypeMap = {
     stickerMessage: Mimetype.webp,
 }
 export type WAParticipantAction = 'add' | 'remove' | 'promote' | 'demote'
-export type BaileysEvent = 
-    'open' | 
+export type BaileysEvent =
+    'open' |
     'connecting' |
     'close' |
-    'ws-close' | 
+    'ws-close' |
     'qr' |
     'connection-phone-change' |
     'contacts-received' |
