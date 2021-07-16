@@ -18,6 +18,8 @@ export type WAMessageContent = proto.IMessage
 export type WAContactMessage = proto.ContactMessage
 export type WAContactsArrayMessage = proto.ContactsArrayMessage
 export type WAGroupInviteMessage = proto.GroupInviteMessage
+export type WAListMessage = proto.ListMessage
+export type WAButtonsMessage = proto.ButtonsMessage
 export type WAMessageKey = proto.IMessageKey
 export type WATextMessage = proto.ExtendedTextMessage
 export type WAContextInfo = proto.IContextInfo
@@ -331,6 +333,8 @@ export enum MessageType {
     contact = 'contactMessage',
     contactsArray = 'contactsArrayMessage',
     groupInviteMessage = 'groupInviteMessage',
+    listMessage = 'listMessage',
+    buttonsMessage = 'buttonsMessage',
     location = 'locationMessage',
     liveLocation = 'liveLocationMessage',
 
@@ -398,6 +402,8 @@ export interface MessageOptions {
     filename?: string
     /** For audio messages, if set to true, will send as a `voice note` */
     ptt?: boolean
+    /** For image or video messages, if set to true, will send as a `viewOnceMessage` */
+    viewOnce?: boolean 
     /** Optional agent for media uploads */
     uploadAgent?: Agent
     /** If set to true (default), automatically detects if you're sending a link & attaches the preview*/

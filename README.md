@@ -231,6 +231,37 @@ const vcard = 'BEGIN:VCARD\n' // metadata of the contact card
             + 'TEL;type=CELL;type=VOICE;waid=911234567890:+91 12345 67890\n' // WhatsApp ID + phone number
             + 'END:VCARD'
 const sentMsg  = await conn.sendMessage(id, {displayname: "Jeff", vcard: vcard}, MessageType.contact)
+// send a list message!
+const rows = [
+ {title: 'Row 1', description: "Hello it's description 1", rowId:"rowid1"},
+ {title: 'Row 2', description: "Hello it's description 2", rowId:"rowid2"}
+]
+
+const sections = [{title: "Section 1", rows: rows}]
+
+const button = {
+ buttonText: 'Click Me!',
+ description: "Hello it's list message",
+ sections: sections,
+ listType: 1
+}
+
+const sendMsg = await conn.sendMessage(id, button, MessageType.listMessage)
+
+// send a buttons message!
+const buttons = [
+  {buttonId: 'id1', buttonText: {displayText: 'Button 1'}, type: 1},
+  {buttonId: 'id2', buttonText: {displayText: 'Button 2'}, type: 1}
+]
+
+const buttonMessage = {
+    contentText: "Hi it's button message",
+    footerText: 'Hello World',
+    buttons: buttons,
+    headerType: 1
+}
+
+const sendMsg = await conn.sendMessage(id, buttonMessage, MessageType.buttonsMessage)
 ```
 
 ### Media Messages
@@ -502,9 +533,9 @@ Of course, replace ``` xyz ``` with an actual ID.
     // only allow admins to send messages
     await conn.groupSettingChange ("abcd-xyz@g.us", GroupSettingChange.messageSend, true)
     // allow everyone to modify the group's settings -- like display picture etc.
-    await conn.groupSettingChange ("abcd-xyz@g.us", GroupSettingChange.settingChange, false)
+    await conn.groupSettingChange ("abcd-xyz@g.us", GroupSettingChange.settingsChange, false)
     // only allow admins to modify the group's settings
-    await conn.groupSettingChange ("abcd-xyz@g.us", GroupSettingChange.settingChange, true)
+    await conn.groupSettingChange ("abcd-xyz@g.us", GroupSettingChange.settingsChange, true)
     ```
 - To leave a group
     ``` ts
