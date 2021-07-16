@@ -16098,7 +16098,7 @@ export namespace proto {
          * Converts this ButtonsMessage to JSON.
          * @returns JSON object
          */
-        public toJSON(): { [k: string]: any };
+        public static toJSON(): { [k: string]: any };
     }
 
     namespace ButtonsMessage {
