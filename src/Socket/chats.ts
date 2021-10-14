@@ -1,8 +1,7 @@
-import { encodeSyncdPatch, decodePatches, extractSyncdPatches, chatModificationToAppPatch } from "../Utils/chat-utils";
 import { SocketConfig, WAPresence, PresenceData, Chat, WAPatchCreate, WAMediaUpload, ChatMutation, WAPatchName, LTHashState, ChatModification, Contact } from "../Types";
 import { BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, jidNormalizedUser, S_WHATSAPP_NET } from "../WABinary";
 import { proto } from '../../WAProto'
-import { generateProfilePicture, toNumber } from "../Utils";
+import { generateProfilePicture, toNumber, encodeSyncdPatch, decodePatches, extractSyncdPatches, chatModificationToAppPatch } from "../Utils";
 import { makeMessagesRecvSocket } from "./messages-recv";
 
 export const makeChatsSocket = (config: SocketConfig) => {
@@ -352,8 +351,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
     const appPatch = async(patchCreate: WAPatchCreate) => {
         const name = patchCreate.type
-
-        await resyncState(name, false)
+        try {
+            await resyncState(name, false)
+        } catch(error) {
+            logger.info({ name, error: error.stack }, 'failed to sync state from version, trying from scratch')
+            await resyncState(name, true)
+        }
+       
         const { patch, state } = await encodeSyncdPatch(
             patchCreate,
             authState,

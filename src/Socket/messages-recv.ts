@@ -1,10 +1,8 @@
 
 import { SocketConfig, WAMessageStubType, ParticipantAction, Chat, GroupMetadata } from "../Types"
-import { decodeMessageStanza, encodeBigEndian, toNumber } from "../Utils"
+import { decodeMessageStanza, encodeBigEndian, toNumber, downloadHistory, generateSignalPubKey, xmppPreKey, xmppSignedPreKey } from "../Utils"
 import { BinaryNode, jidDecode, jidEncode, isJidStatusBroadcast, areJidsSameUser, getBinaryNodeChildren, jidNormalizedUser } from '../WABinary'
-import { downloadHistory } from '../Utils/history'
 import { proto } from "../../WAProto"
-import { generateSignalPubKey, xmppPreKey, xmppSignedPreKey } from "../Utils/signal"
 import { KEY_BUNDLE_TYPE } from "../Defaults"
 import { makeMessagesSocket } from "./messages-send"
 
@@ -99,14 +97,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             ev.emit('auth-state.update', authState)
         })
     }
-
     const processMessage = async(message: proto.IWebMessageInfo, chatUpdate: Partial<Chat>) => {
         const protocolMsg = message.message?.protocolMessage
         if(protocolMsg) {
             switch(protocolMsg.type) {
                 case proto.ProtocolMessage.ProtocolMessageType.HISTORY_SYNC_NOTIFICATION:
-                    const history = await downloadHistory(protocolMsg!.historySyncNotification)
+                    const histNotification = protocolMsg!.historySyncNotification
+                    
+                    logger.info({ type: histNotification.syncType!, id: message.key.id }, 'got history notification')
+                    const history = await downloadHistory(histNotification)
+                    
                     processHistoryMessage(history)
+
+                    const meJid = authState.creds.me!.id
+                    await sendNode({
+                        tag: 'receipt',
+                        attrs: {
+                            id: message.key.id,
+                            type: 'hist_sync',
+                            to: jidEncode(jidDecode(meJid).user, 'c.us')
+                        }
+                    })
                     break
                 case proto.ProtocolMessage.ProtocolMessageType.APP_STATE_SYNC_KEY_REQUEST:
                     const keys = await Promise.all(
@@ -148,8 +159,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
                 case proto.ProtocolMessage.ProtocolMessageType.REVOKE:
                     ev.emit('messages.update', [
                         { 
-                            key: message.key, 
-                            update: { message: null, messageStubType: WAMessageStubType.REVOKE, key: protocolMsg.key } 
+                            key: protocolMsg.key, 
+                            update: { message: null, messageStubType: WAMessageStubType.REVOKE, key: message.key } 
                         }
                     ])
                 break
@@ -207,22 +218,32 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
     }
 
     const processHistoryMessage = (item: proto.HistorySync) => {
+        const messages: proto.IWebMessageInfo[] = []
         switch(item.syncType) {
             case proto.HistorySync.HistorySyncHistorySyncType.INITIAL_BOOTSTRAP:
-                const messages: proto.IWebMessageInfo[] = []
                 const chats = item.conversations!.map(
                     c => {
                         const chat: Chat = { ...c }
                         //@ts-expect-error
                         delete chat.messages
-                        for(const item of c.messages || []) {
-                            messages.push(item.message)
+                        for(const msg of c.messages || []) {
+                            if(msg.message) {
+                                messages.push(msg.message)
+                            }
                         }
                         return chat
                     }
                 )
                 ev.emit('chats.set', { chats, messages })
-                ev.emit('connection.update', { receivedPendingNotifications: true })
+            break
+            case proto.HistorySync.HistorySyncHistorySyncType.RECENT:
+                // push remaining messages
+                for(const conv of item.conversations) {
+                    for(const m of (conv.messages || [])) {
+                        messages.push(m.message!)
+                    }
+                }
+                ev.emit('messages.upsert', { messages, type: 'prepend' })
             break
             case proto.HistorySync.HistorySyncHistorySyncType.PUSH_NAME:
                 const contacts = item.pushnames.map(
@@ -306,10 +327,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             const isGroup = !!stanza.attrs.participant
             const sender = (attrs.participant || attrs.from)?.toString()
             const isMe = areJidsSameUser(sender, authState.creds.me!.id)
-    
-            await sendMessageAck(stanza)
-
-            logger.debug({ msgId: dec.msgId, sender }, 'send message ack')
 
             // send delivery receipt
             let recpAttrs: { [_: string]: any }
@@ -327,17 +344,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             } else {
                 const isStatus = isJidStatusBroadcast(stanza.attrs.from)
                 recpAttrs = {
-                    //type: 'inactive',
+                    type: 'inactive',
                     id: stanza.attrs.id,
-                    to: dec.chatId,
                 }
                 if(isGroup || isStatus) {
                     recpAttrs.participant = stanza.attrs.participant
+                    recpAttrs.to = dec.chatId
+                } else {
+                    recpAttrs.to = jidEncode(jidDecode(dec.chatId).user, 'c.us')
                 }
             }
+            
             await sendNode({ tag: 'receipt', attrs: recpAttrs })
+            logger.debug({ msgId: dec.msgId }, 'sent message receipt')
 
-            logger.debug({ msgId: dec.msgId }, 'send message receipt')
+            await sendMessageAck(stanza)
+            logger.debug({ msgId: dec.msgId, sender }, 'sent message ack')
 
             const message = msg.deviceSentMessage?.message || msg
                 fullMessages.push({
