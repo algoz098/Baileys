@@ -18,7 +18,7 @@ export const NOISE_WA_HEADER = new Uint8Array([87, 65, 5, 2]) // last is "DICT_V
 export const URL_REGEX = /[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_+.~#?&//=]*)?/gi
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
-	version: [2, 2136, 9],
+	version: [2, 2142, 12],
 	browser: Browsers.baileys('Chrome'),
 
 	waWebSocketUrl: 'wss://web.whatsapp.com/ws/chat',
@@ -35,7 +35,8 @@ export const MEDIA_PATH_MAP: { [T in MediaType]: string } = {
     document: '/mms/document',
     audio: '/mms/audio',
     sticker: '/mms/image',
-    history: ''
+    history: '',
+    'md-app-state': ''
 }
 
 export const MEDIA_KEYS = Object.keys(MEDIA_PATH_MAP) as MediaType[]

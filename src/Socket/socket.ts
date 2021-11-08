@@ -460,11 +460,21 @@ export const makeSocket = ({
             await uploadPreKeys()
         }
         await sendPassiveIq('active')
+
+        logger.info('opened connection to WA')
+
         ev.emit('connection.update', { connection: 'open' })
     })
-    // logged out
-    ws.on('CB:failure,reason:401', () => {
-        end(new Boom('Logged Out', { statusCode: DisconnectReason.loggedOut }))
+    ws.on('CB:stream:error', (node: BinaryNode) => {
+        logger.error({ error: node }, `stream errored out`)
+
+        const statusCode = +(node.attrs.code || DisconnectReason.restartRequired)
+        end(new Boom('Stream Errored', { statusCode, data: node }))
+    })
+    // stream fail, possible logout
+    ws.on('CB:failure', (node: BinaryNode) => {
+        const reason = +(node.attrs.reason || 500)
+        end(new Boom('Connection Failure', { statusCode: reason, data: node.attrs }))
     })
     process.nextTick(() => {
         ev.emit('connection.update', { connection: 'connecting', receivedPendingNotifications: false, qr: undefined })
