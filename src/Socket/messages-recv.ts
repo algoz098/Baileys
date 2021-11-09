@@ -21,20 +21,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
         sendDeliveryReceipt,
 	} = sock
 
-    const sendMessageAck = async({ attrs }: BinaryNode) => {
+    const sendMessageAck = async({ attrs }: BinaryNode, includeType: boolean) => {
         const isGroup = !!attrs.participant
-        const { user: meUser } = jidDecode(authState.creds.me!.id!)
+        const meJid = authState.creds.me!.id!
         const stanza: BinaryNode = {
             tag: 'ack',
             attrs: {
                 class: 'receipt',
                 id: attrs.id,
-                to: isGroup ? attrs.from : jidEncode(jidDecode(authState.creds.me!.id).user, 'c.us'),
+                to: attrs.from,
             }
         }
-        if(isGroup) {
-            stanza.attrs.participant = jidEncode(meUser, 's.whatsapp.net')
+        if(includeType) {
+            stanza.attrs.type = attrs.type
         }
+        if(isGroup) {
+            stanza.attrs.participant = jidNormalizedUser(meJid)
+        }
+        logger.debug({ attrs: stanza.attrs }, 'sent message ack')
         await sendNode(stanza)
     }
 
@@ -347,7 +351,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             } else {
                 const isStatus = isJidStatusBroadcast(stanza.attrs.from)
                 recpAttrs = {
-                    type: 'inactive',
                     id: stanza.attrs.id,
                 }
                 if(isGroup || isStatus) {
@@ -361,8 +364,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             await sendNode({ tag: 'receipt', attrs: recpAttrs })
             logger.debug({ msgId: dec.msgId }, 'sent message receipt')
 
-            await sendMessageAck(stanza)
-            logger.debug({ msgId: dec.msgId, sender }, 'sent message ack')
+            await sendMessageAck(stanza, false)
 
             await sendDeliveryReceipt(dec.chatId, dec.participant, [dec.msgId])
             logger.debug({ msgId: dec.msgId }, 'sent delivery receipt')
@@ -419,7 +421,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
         logger.debug({ attrs: node.attrs }, 'sending receipt for ack')
     })
 
-    const handleReceipt = ({ attrs, content }: BinaryNode) => {
+    const handleReceipt = async(node: BinaryNode) => {
+        const { attrs, content } = node
         const isRead = isReadReceipt(attrs.type)
         const status = isRead ? proto.WebMessageInfo.WebMessageInfoStatus.READ : proto.WebMessageInfo.WebMessageInfoStatus.DELIVERY_ACK
         const ids = [attrs.id]
@@ -439,6 +442,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             },
             update: { status }
         })))
+
+        await sendMessageAck(node, true)
     }
 
     ws.on('CB:receipt', handleReceipt)
@@ -508,5 +513,5 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
         }
     })
 
-	return { ...sock, processMessage }
+	return { ...sock, processMessage, sendMessageAck }
 }
