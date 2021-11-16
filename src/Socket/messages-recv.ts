@@ -1,10 +1,11 @@
 
-import { SocketConfig, WAMessageStubType, ParticipantAction, Chat, GroupMetadata } from "../Types"
+import { SocketConfig, WAMessageStubType, ParticipantAction, Chat, GroupMetadata, WAMessageKey } from "../Types"
 import { decodeMessageStanza, encodeBigEndian, toNumber, downloadHistory, generateSignalPubKey, xmppPreKey, xmppSignedPreKey } from "../Utils"
-import { BinaryNode, jidDecode, jidEncode, isJidStatusBroadcast, areJidsSameUser, getBinaryNodeChildren, jidNormalizedUser } from '../WABinary'
+import { BinaryNode, jidDecode, jidEncode, isJidStatusBroadcast, areJidsSameUser, getBinaryNodeChildren, jidNormalizedUser, getAllBinaryNodeChildren, BinaryNodeAttributes } from '../WABinary'
 import { proto } from "../../WAProto"
 import { KEY_BUNDLE_TYPE } from "../Defaults"
 import { makeMessagesSocket } from "./messages-send"
+import { extractGroupMetadata } from "./groups"
 
 const isReadReceipt = (type: string) => type === 'read' || type === 'read-self'
 
@@ -21,29 +22,34 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
         sendDeliveryReceipt,
 	} = sock
 
-    const sendMessageAck = async({ attrs }: BinaryNode, includeType: boolean) => {
-        const isGroup = !!attrs.participant
-        const meJid = authState.creds.me!.id!
+    const msgRetryMap = config.msgRetryCounterMap || { }
+
+    const sendMessageAck = async({ tag, attrs }: BinaryNode, extraAttrs: BinaryNodeAttributes) => {
         const stanza: BinaryNode = {
             tag: 'ack',
             attrs: {
-                class: 'receipt',
                 id: attrs.id,
                 to: attrs.from,
+                ...extraAttrs,
             }
         }
-        if(includeType) {
-            stanza.attrs.type = attrs.type
+        if(!!attrs.participant) {
+            stanza.attrs.participant = attrs.participant
         }
-        if(isGroup) {
-            stanza.attrs.participant = jidNormalizedUser(meJid)
-        }
-        logger.debug({ attrs: stanza.attrs }, 'sent message ack')
+        logger.debug({ recv: attrs, sent: stanza.attrs }, `sent "${tag}" ack`)
         await sendNode(stanza)
     }
 
     const sendRetryRequest = async(node: BinaryNode) => {
-        const retryCount = +(node.attrs.retryCount || 0) + 1
+        const msgId = node.attrs.id
+        const retryCount = msgRetryMap[msgId] || 1
+        if(retryCount >= 5) {
+            logger.debug({ retryCount, msgId }, 'reached retry limit, clearing')
+            delete msgRetryMap[msgId]
+            return
+        }
+        msgRetryMap[msgId] = retryCount+1
+
         const isGroup = !!node.attrs.participant
         const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
         
@@ -56,7 +62,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             const receipt: BinaryNode = {
                 tag: 'receipt',
                 attrs: {
-                    id: node.attrs.id,
+                    id: msgId,
                     type: 'retry',
                     to: isGroup ? node.attrs.from : jidEncode(decFrom!.user, 's.whatsapp.net', decFrom!.device, 0)
                 },
@@ -85,7 +91,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             if(retryCount > 1) {
                 const exec = generateSignalPubKey(Buffer.from(KEY_BUNDLE_TYPE)).slice(0, 1);
 
-                (node.content! as BinaryNode[]).push({
+                (receipt.content! as BinaryNode[]).push({
                     tag: 'keys',
                     attrs: { },
                     content: [
@@ -97,11 +103,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
                     ]
                 })
             }
-            await sendNode(node)
+            await sendNode(receipt)
 
-            logger.info({ msgId: node.attrs.id, retryCount }, 'sent retry receipt')
-
-            ev.emit('auth-state.update', authState)
+            logger.info({ msgAttrs: node.attrs, retryCount }, 'sent retry receipt')
         })
     }
     const processMessage = async(message: proto.IWebMessageInfo, chatUpdate: Partial<Chat>) => {
@@ -194,7 +198,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
                     participants = message.messageStubParameters
                     emitParticipantsUpdate('remove')
                     // mark the chat read only if you left the group
-                    if (participants.includes(meJid)) {
+                    if(participants.includes(meJid)) {
                         chatUpdate.readOnly = true
                     }
                     break
@@ -216,7 +220,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
                     emitGroupUpdate({ restrict })
                     break
                 case WAMessageStubType.GROUP_CHANGE_SUBJECT:
-                case WAMessageStubType.GROUP_CREATE:
                     chatUpdate.name = message.messageStubParameters[0]
                     emitGroupUpdate({ subject: chatUpdate.name })
                     break
@@ -250,7 +253,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
                         messages.push(m.message!)
                     }
                 }
-                ev.emit('messages.upsert', { messages, type: 'prepend' })
+                if(messages.length) {
+                    ev.emit('messages.upsert', { messages, type: 'prepend' })
+                }
             break
             case proto.HistorySync.HistorySyncHistorySyncType.PUSH_NAME:
                 const contacts = item.pushnames.map(
@@ -266,10 +271,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
     const processNotification = (node: BinaryNode): Partial<proto.IWebMessageInfo> => {
         const result: Partial<proto.IWebMessageInfo> = { }
-        const child = (node.content as BinaryNode[])?.[0]
+        const [child] = getAllBinaryNodeChildren(node)
 
         if(node.attrs.type === 'w:gp2') {
             switch(child?.tag) {
+                case 'create':
+                    const metadata = extractGroupMetadata(child)
+                    result.messageStubType = WAMessageStubType.GROUP_CREATE
+                    result.messageStubParameters = [metadata.subject]
+
+                    ev.emit('chats.upsert', [{
+                        id: metadata.id,
+                        name: metadata.subject,
+                        conversationTimestamp: metadata.creation,
+                    }])
+                    ev.emit('groups.upsert', [metadata])
+                    break
                 case 'ephemeral':
                 case 'not_ephemeral':
                     result.message = {
@@ -329,13 +346,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
     ws.on('CB:message', async(stanza: BinaryNode) => {
         const dec = await decodeMessageStanza(stanza, authState)
         const fullMessages: proto.IWebMessageInfo[] = []
-        for(const msg of dec.successes) {
-            const { attrs } = stanza
-            const isGroup = !!stanza.attrs.participant
-            const sender = (attrs.participant || attrs.from)?.toString()
-            const isMe = areJidsSameUser(sender, authState.creds.me!.id)
 
-            // send delivery receipt
+        const { attrs } = stanza
+        const isGroup = !!stanza.attrs.participant
+        const sender = (attrs.participant || attrs.from)?.toString()
+        const isMe = areJidsSameUser(sender, authState.creds.me!.id)
+
+        const remoteJid = jidNormalizedUser(dec.chatId)
+        
+        const key: WAMessageKey = {
+            remoteJid,
+            fromMe: isMe,
+            id: dec.msgId,
+            participant: dec.participant
+        }
+        // if there were some successful decryptions
+        if(dec.successes.length) {
+            ev.emit('auth-state.update', authState)
+            // send message receipt
             let recpAttrs: { [_: string]: any }
             if(isMe) {
                 recpAttrs =  {
@@ -364,40 +392,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             await sendNode({ tag: 'receipt', attrs: recpAttrs })
             logger.debug({ msgId: dec.msgId }, 'sent message receipt')
 
-            await sendMessageAck(stanza, false)
+            await sendMessageAck(stanza, { class: 'receipt' })
 
             await sendDeliveryReceipt(dec.chatId, dec.participant, [dec.msgId])
             logger.debug({ msgId: dec.msgId }, 'sent delivery receipt')
-
-            const remoteJid = jidNormalizedUser(dec.chatId)
-
-            const message = msg.deviceSentMessage?.message || msg
-                fullMessages.push({
-                    key: {
-                        remoteJid,
-                        fromMe: isMe,
-                        id: dec.msgId,
-                        participant: dec.participant
-                    },
-                    message,
-                    status: isMe ? proto.WebMessageInfo.WebMessageInfoStatus.SERVER_ACK : null,
-                    messageTimestamp: dec.timestamp,
-                    pushName: dec.pushname,
-                    participant: dec.participant
-                })
         }
 
-        if(dec.successes.length) {
-            ev.emit('auth-state.update', authState)
-            if(fullMessages.length) {
-                ev.emit(
-                    'messages.upsert', 
-                    { 
-                        messages: fullMessages.map(m => proto.WebMessageInfo.fromObject(m)), 
-                        type: stanza.attrs.offline ? 'append' : 'notify' 
-                    }
-                )
-            }
+        for(const msg of dec.successes) {
+            const message = msg.deviceSentMessage?.message || msg
+            fullMessages.push({
+                key,
+                message,
+                status: isMe ? proto.WebMessageInfo.WebMessageInfoStatus.SERVER_ACK : null,
+                messageTimestamp: dec.timestamp,
+                pushName: dec.pushname,
+                participant: dec.participant
+            })
         }
         
 		for(const { error } of dec.failures) {
@@ -406,7 +416,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
                 'failure in decrypting message'
             )
             await sendRetryRequest(stanza)
+            
+            fullMessages.push({
+                key,
+                messageStubType: WAMessageStubType.CIPHERTEXT,
+                messageStubParameters: [error.message]
+            })
         }
+
+        ev.emit(
+            'messages.upsert', 
+            { 
+                messages: fullMessages.map(m => proto.WebMessageInfo.fromObject(m)), 
+                type: stanza.attrs.offline ? 'append' : 'notify' 
+            }
+        )
     })
 
     ws.on('CB:ack,class:message', async(node: BinaryNode) => {
@@ -419,6 +443,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             }
         })
         logger.debug({ attrs: node.attrs }, 'sending receipt for ack')
+    })
+
+    ws.on('CB:call', async(node: BinaryNode) => {
+        logger.info({ node }, 'recv call')
+
+        const [child] = getAllBinaryNodeChildren(node)
+        if(child.tag === 'terminate' || child.tag === 'relaylatency') {
+            await sendMessageAck(node, { class: 'call', type: child.tag })
+        }
     })
 
     const handleReceipt = async(node: BinaryNode) => {
@@ -443,27 +476,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             update: { status }
         })))
 
-        await sendMessageAck(node, true)
+        await sendMessageAck(node, { class: 'receipt', type: attrs.type })
     }
 
     ws.on('CB:receipt', handleReceipt)
 
     ws.on('CB:notification', async(node: BinaryNode) => {
-        const sendAck = async() => {
-            await sendNode({
-                tag: 'ack',
-                attrs: {
-                    class: 'notification',
-                    id: node.attrs.id,
-                    type: node.attrs.type,
-                    to: node.attrs.from
-                }
-            })
-            
-            logger.debug({ msgId: node.attrs.id }, 'ack notification')
-        }
-
-        await sendAck()
+        await sendMessageAck(node, { class: 'notification', type: node.attrs.type })
 
         const msg = processNotification(node)
         if(msg) {

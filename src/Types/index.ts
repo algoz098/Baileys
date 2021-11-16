@@ -48,6 +48,10 @@ export type SocketConfig = {
     emitOwnEvents: boolean
     /** provide a cache to store a user's device list */
     userDevicesCache?: NodeCache
+    /** provide a cache to store media, so does not have to be re-uploaded */
+    mediaCache?: NodeCache
+    /** map to store the retry counts for failed messages */
+    msgRetryCounterMap?: { [msgId: string]: number }
 }
 
 export enum DisconnectReason {
@@ -118,6 +122,7 @@ export type BaileysEventMap = {
 
     'message-info.update': MessageInfoUpdate[]
 
+    'groups.upsert': GroupMetadata[]
     'groups.update': Partial<GroupMetadata>[]
     /** apply an action to participants in a group */
     'group-participants.update': { id: string, participants: string[], action: ParticipantAction }
