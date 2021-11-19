@@ -2,11 +2,12 @@ import { SocketConfig, WAPresence, PresenceData, Chat, WAPatchCreate, WAMediaUpl
 import { BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, jidNormalizedUser, S_WHATSAPP_NET } from "../WABinary";
 import { proto } from '../../WAProto'
 import { generateProfilePicture, toNumber, encodeSyncdPatch, decodePatches, extractSyncdPatches, chatModificationToAppPatch } from "../Utils";
-import { makeMessagesRecvSocket } from "./messages-recv";
+import { makeMessagesSocket } from "./messages-send";
+import makeMutex from "../Utils/make-mutex";
 
 export const makeChatsSocket = (config: SocketConfig) => {
 	const { logger } = config
-	const sock = makeMessagesRecvSocket(config)
+	const sock = makeMessagesSocket(config)
 	const { 
 		ev,
 		ws,
@@ -17,7 +18,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
         fetchPrivacySettings,
 	} = sock
 
-    const interactiveQuery = async (userNodes: BinaryNode[], queryNode: BinaryNode) => {
+    const mutationMutex = makeMutex()
+
+    const interactiveQuery = async(userNodes: BinaryNode[], queryNode: BinaryNode) => {
         const result = await query({
             tag: 'iq',
             attrs: {
@@ -216,7 +219,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
                 processSyncActions(newMutations)
             }
         }
-
         ev.emit('auth-state.update', authState)
     }
 
@@ -300,6 +302,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
         }
     }
 
+    const resyncMainAppState = async() => {
+        
+        logger.debug('resyncing main app state')
+        
+        await (
+            mutationMutex.mutex(
+                () => resyncAppState([ 'critical_block', 'critical_unblock_low' ])
+            )
+            .catch(err => (
+                logger.warn({ trace: err.stack }, 'failed to sync app state')
+            ))
+        )
+    }
+
     const processSyncActions = (actions: ChatMutation[]) => {
         const updates: { [jid: string]: Partial<Chat> } = {}
         const contactUpdates: { [jid: string]: Contact } = {}
@@ -354,59 +370,63 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
     const appPatch = async (patchCreate: WAPatchCreate) => {
         const name = patchCreate.type
-        try {
-            await resyncAppState([name])
-        } catch(error) {
-            logger.info({ name, error: error.stack }, 'failed to sync state from version, trying from scratch')
-            await resyncAppState([name], true)
-        }
-
-        const { patch, state } = await encodeSyncdPatch(
-            patchCreate,
-            authState,
-        )
-        const initial = await authState.keys.getAppStateSyncVersion(name)
-        // temp: verify it was encoded correctly
-        const result = await decodePatches(name, [{ ...patch, version: { version: state.version }, }], initial, authState)
-
-        const node: BinaryNode = {
-            tag: 'iq',
-            attrs: {
-                to: S_WHATSAPP_NET,
-                type: 'set',
-                xmlns: 'w:sync:app:state'
-            },
-            content: [
-                {
-                    tag: 'sync',
-                    attrs: {},
+        await mutationMutex.mutex(
+            async() => {
+                try {
+                    await resyncAppState([name])
+                } catch(error) {
+                    logger.info({ name, error: error.stack }, 'failed to sync state from version, trying from scratch')
+                    await resyncAppState([name], true)
+                }
+                const { patch, state } = await encodeSyncdPatch(
+                    patchCreate,
+                    authState,
+                )
+                const initial = await authState.keys.getAppStateSyncVersion(name)
+                // temp: verify it was encoded correctly
+                const result = await decodePatches(name, [{ ...patch, version: { version: state.version }, }], initial, authState)
+        
+                const node: BinaryNode = {
+                    tag: 'iq',
+                    attrs: {
+                        to: S_WHATSAPP_NET,
+                        type: 'set',
+                        xmlns: 'w:sync:app:state'
+                    },
                     content: [
                         {
-                            tag: 'collection',
-                            attrs: {
-                                name,
-                                version: (state.version - 1).toString(),
-                                return_snapshot: 'false'
-                            },
+                            tag: 'sync',
+                            attrs: { },
                             content: [
                                 {
-                                    tag: 'patch',
-                                    attrs: {},
-                                    content: proto.SyncdPatch.encode(patch).finish()
+                                    tag: 'collection',
+                                    attrs: {
+                                        name,
+                                        version: (state.version-1).toString(),
+                                        return_snapshot: 'false'
+                                    },
+                                    content: [
+                                        {
+                                            tag: 'patch',
+                                            attrs: { },
+                                            content: proto.SyncdPatch.encode(patch).finish()
+                                        }
+                                    ]
                                 }
                             ]
                         }
                     ]
                 }
-            ]
-        }
-        await query(node)
-
-        await authState.keys.setAppStateSyncVersion(name, state)
-        ev.emit('auth-state.update', authState)
-        if (config.emitOwnEvents) {
-            processSyncActions(result.newMutations)
-        }
+                await query(node)
+        
+                await authState.keys.setAppStateSyncVersion(name, state)
+                ev.emit('auth-state.update', authState)
+                
+                if(config.emitOwnEvents) {
+                    processSyncActions(result.newMutations)
+                }
+            }
+        )
     }
 
     const chatModify = (mod: ChatModification, jid: string, lastMessages: Pick<proto.IWebMessageInfo, 'key' | 'messageTimestamp'>[]) => {
@@ -434,8 +454,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
         const update = getBinaryNodeChild(node, 'collection')
         if(update) {
             const name = update.attrs.name as WAPatchName
-            resyncAppState([name], false)
-                .catch(err => logger.error({ trace: err.stack, node }, `failed to sync state`))
+            mutationMutex.mutex(
+                async() => {
+                    await resyncAppState([name], false)
+                        .catch(err => logger.error({ trace: err.stack, node }, `failed to sync state`))
+                }
+            )
         }
     })
 
@@ -444,8 +468,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
             sendPresenceUpdate('available')
             fetchBlocklist()
             fetchPrivacySettings()
-            resyncAppState([ 'critical_block', 'critical_unblock_low' ])
-                .catch(err => logger.info({ trace: err.stack }, 'failed to sync app state'))
+            resyncMainAppState()
         }
     })
 
@@ -462,5 +485,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
         updateBlockStatus,
         resyncAppState,
         chatModify,
-    }
+        resyncMainAppState,
+	}
 }
