@@ -4,10 +4,11 @@ import { promisify } from "util"
 import WebSocket from "ws"
 import { randomBytes } from 'crypto'
 import { proto } from '../../WAProto'
-import { DisconnectReason, SocketConfig, BaileysEventEmitter, ConnectionState } from "../Types"
-import { Curve, initAuthState, generateRegistrationNode, configureSuccessfulPairing, generateLoginNode, encodeBigEndian, promiseTimeout, generateOrGetPreKeys, xmppSignedPreKey, xmppPreKey, getPreKeys, makeNoiseHandler } from "../Utils"
+import { DisconnectReason, SocketConfig, BaileysEventEmitter, ConnectionState, AuthenticationCreds } from "../Types"
+import { Curve, generateRegistrationNode, configureSuccessfulPairing, generateLoginNode, encodeBigEndian, promiseTimeout, generateOrGetPreKeys, xmppSignedPreKey, xmppPreKey, getPreKeys, makeNoiseHandler, useSingleFileAuthState } from "../Utils"
 import { DEFAULT_ORIGIN, DEF_TAG_PREFIX, DEF_CALLBACK_PREFIX, KEY_BUNDLE_TYPE } from "../Defaults"
-import { assertNodeErrorFree, BinaryNode, encodeBinaryNode, S_WHATSAPP_NET } from '../WABinary'
+import { assertNodeErrorFree, BinaryNode, encodeBinaryNode, S_WHATSAPP_NET, getBinaryNodeChild } from '../WABinary'
+
 /**
  * Connects to WA servers and performs:
  * - simple queries (no retry mechanism, wait for connection establishment)
@@ -24,6 +25,7 @@ export const makeSocket = ({
     browser,
     auth: initialAuthState,
     printQRInTerminal,
+    defaultQueryTimeoutMs
 }: SocketConfig) => {
 	const ws = new WebSocket(waWebSocketUrl, undefined, {
 		origin: DEFAULT_ORIGIN,
@@ -39,13 +41,22 @@ export const makeSocket = ({
 		}
 	})
     ws.setMaxListeners(0)
+    const ev = new EventEmitter() as BaileysEventEmitter
     /** ephemeral key pair used to encrypt/decrypt communication. Unique for each connection */
     const ephemeralKeyPair = Curve.generateKeyPair()
     /** WA noise protocol wrapper */
     const noise = makeNoiseHandler(ephemeralKeyPair)
-    const authState = initialAuthState || initAuthState()
+    let authState = initialAuthState
+    if(!authState) {
+        authState = useSingleFileAuthState('./auth-info-multi.json').state
+
+        logger.warn(`
+            Baileys just created a single file state for your credentials. 
+            This will not be supported soon.
+            Please pass the credentials in the config itself
+        `)
+    }
     const { creds } = authState
-    const ev = new EventEmitter() as BaileysEventEmitter
 	
     let lastDateRecv: Date
 	let epoch = 0
@@ -100,7 +111,7 @@ export const makeSocket = ({
      * @param json query that was sent
      * @param timeoutMs timeout after which the promise will reject
      */
-	 const waitForMessage = async(msgId: string, timeoutMs?: number) => {
+	 const waitForMessage = async(msgId: string, timeoutMs = defaultQueryTimeoutMs) => {
         let onRecv: (json) => void
         let onErr: (err) => void
         try {
@@ -113,12 +124,14 @@ export const makeSocket = ({
                     
                     ws.on(`TAG:${msgId}`, onRecv)
                     ws.on('close', onErr) // if the socket closes, you'll never receive the message
+                    ws.off('error', onErr)
                 },
             )
             return result as any
         } finally {
             ws.off(`TAG:${msgId}`, onRecv)
             ws.off('close', onErr) // if the socket closes, you'll never receive the message
+            ws.off('error', onErr)
         }
     }
     /** send a query, and wait for its response. auto-generates message ID if not provided */
@@ -174,11 +187,16 @@ export const makeSocket = ({
     }
     /** get some pre-keys and do something with them */
     const assertingPreKeys = async(range: number, execute: (keys: { [_: number]: any }) => Promise<void>) => {
-        const { newPreKeys, lastPreKeyId, preKeysRange } = generateOrGetPreKeys(authState, range)
-
-        creds.serverHasPreKeys = true
-        creds.nextPreKeyId = Math.max(lastPreKeyId+1, creds.nextPreKeyId)
-        creds.firstUnuploadedPreKeyId = Math.max(creds.firstUnuploadedPreKeyId, lastPreKeyId+1)
+        const { newPreKeys, lastPreKeyId, preKeysRange } = generateOrGetPreKeys(authState.creds, range)
+        
+        const update: Partial<AuthenticationCreds> = {
+            nextPreKeyId: Math.max(lastPreKeyId+1, creds.nextPreKeyId),
+            firstUnuploadedPreKeyId: Math.max(creds.firstUnuploadedPreKeyId, lastPreKeyId+1)
+        }
+        if(!creds.serverHasPreKeys) {
+            update.serverHasPreKeys = true
+        }
+       
         await Promise.all(
             Object.keys(newPreKeys).map(k => authState.keys.setPreKey(+k, newPreKeys[+k]))
         )
@@ -186,7 +204,7 @@ export const makeSocket = ({
         const preKeys = await getPreKeys(authState.keys, preKeysRange[0], preKeysRange[0] + preKeysRange[1])
         await execute(preKeys)
 
-        ev.emit('auth-state.update', authState)
+        ev.emit('creds.update', update)
     }
     /** generates and uploads a set of pre-keys */
     const uploadPreKeys = async() => {
@@ -252,6 +270,7 @@ export const makeSocket = ({
         logger.info({ error }, 'connection closed')
 
         clearInterval(keepAliveReq)
+        clearInterval(qrTimer)
 
         ws.removeAllListeners('close')
         ws.removeAllListeners('error')
@@ -269,7 +288,7 @@ export const makeSocket = ({
                 date: new Date()
             } 
         })
-        ws.removeAllListeners('connection.update')
+        ev.removeAllListeners('connection.update')
 	}
 
     const waitForSocketOpen = async() => {
@@ -444,15 +463,6 @@ export const makeSocket = ({
         }
 
         genPairQR()
-
-        const checkConnection = ({ connection }: ConnectionState) => {
-            if(connection === 'open' || connection === 'close') {
-                clearTimeout(qrTimer)
-                ev.off('connection.update', checkConnection)
-            }
-        }
-
-        ev.on('connection.update', checkConnection)
     })
     // device paired for the first time
     // if device pairs successfully, the server asks to restart the connection
@@ -472,10 +482,10 @@ export const makeSocket = ({
                     throw new Boom('Authentication failed', { statusCode: +(value.attrs.code || 500) })
                 }
             }
-            Object.assign(creds, updatedCreds)
-            logger.info({ jid: creds.me!.id }, 'registered connection, restart server')
 
-            ev.emit('auth-state.update', authState)
+            logger.info({ jid: updatedCreds.me!.id }, 'registered connection, restart server')
+
+            ev.emit('creds.update', updatedCreds)
             ev.emit('connection.update', { isNewLogin: true, qr: undefined })
 
             end(new Boom('Restart Required', { statusCode: DisconnectReason.restartRequired }))
@@ -492,9 +502,20 @@ export const makeSocket = ({
         await sendPassiveIq('active')
 
         logger.info('opened connection to WA')
+        clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try
 
         ev.emit('connection.update', { connection: 'open' })
     })
+    
+    ws.on('CB:ib,,offline', (node: BinaryNode) => {
+        const child = getBinaryNodeChild(node, 'offline')
+        const offlineCount = +child.attrs.count 
+
+        logger.info(`got ${offlineCount} offline messages/notifications`)
+
+        ev.emit('connection.update', { receivedPendingNotifications: true })
+    })
+
     ws.on('CB:stream:error', (node: BinaryNode) => {
         logger.error({ error: node }, `stream errored out`)
 
@@ -506,9 +527,16 @@ export const makeSocket = ({
         const reason = +(node.attrs.reason || 500)
         end(new Boom('Connection Failure', { statusCode: reason, data: node.attrs }))
     })
+
+    ws.on('CB:ib,,downgrade_webclient', () => {
+        end(new Boom('Multi-device beta not joined', { statusCode: DisconnectReason.notJoinedBeta }))
+    })
+
     process.nextTick(() => {
         ev.emit('connection.update', { connection: 'connecting', receivedPendingNotifications: false, qr: undefined })
     })
+    // update credentials when required
+    ev.on('creds.update', update => Object.assign(creds, update))
 
 	return {
         ws,

@@ -11,7 +11,7 @@ import type { Logger } from "pino"
 import type { URL } from "url"
 import type NodeCache from 'node-cache'
 
-import { AuthenticationState } from './Auth'
+import { AuthenticationState, AuthenticationCreds } from './Auth'
 import { Chat, PresenceData } from './Chat'
 import { Contact } from './Contact'
 import { ConnectionState } from './State'
@@ -30,6 +30,8 @@ export type SocketConfig = {
     waWebSocketUrl: string | URL 
     /** Fails the connection if the socket times out in this interval */
 	connectTimeoutMs: number
+    /** Default timeout for queries, undefined for no timeout */
+    defaultQueryTimeoutMs: number | undefined
     /** ping-pong interval for WS connection */
     keepAliveIntervalMs: number
     /** proxy agent */
@@ -60,7 +62,8 @@ export enum DisconnectReason {
     timedOut = 408,
 	loggedOut = 401,
     badSession = 500,
-    restartRequired = 410
+    restartRequired = 410,
+    notJoinedBeta = 403
 }
 
 export type WAInitResponse = {
@@ -96,8 +99,8 @@ export type CurveKeyPair = { private: Uint8Array; public: Uint8Array }
 export type BaileysEventMap = {
     /** connection state has been updated -- WS closed, opened, connecting etc. */
 	'connection.update': Partial<ConnectionState>
-    /** auth state updated -- some pre keys, or identity keys etc. */
-    'auth-state.update': AuthenticationState
+    /** credentials updated -- some metadata, keys or something */
+    'creds.update': Partial<AuthenticationCreds>
     /** set chats (history sync), messages are reverse chronologically sorted */
     'chats.set': { chats: Chat[], messages: WAMessage[] }
     /** upsert chats */
