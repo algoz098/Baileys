@@ -23,6 +23,8 @@ export type WAMediaUpload = Buffer | { url: URL | string } | { stream: Readable 
 /** Set of message types that are supported by the library */
 export type MessageType = keyof proto.Message
 
+export type DownloadableMessage = { mediaKey?: Uint8Array, directPath?: string, url?: string }
+
 export type MediaConnInfo = {
     auth: string 
     ttl: number
@@ -115,6 +117,8 @@ export type AnyMessageContent = AnyRegularMessageContent | {
 
 export type MessageRelayOptions = {
     messageId?: string
+    /** only send to a specific participant */
+    participant?: string
     additionalAttributes?: { [_: string]: string }
     cachedGroupMetadata?: (jid: string) => Promise<GroupMetadata | undefined>
     //cachedDevices?: (jid: string) => Promise<string[] | undefined>

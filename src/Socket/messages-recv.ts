@@ -6,6 +6,7 @@ import { proto } from "../../WAProto"
 import { KEY_BUNDLE_TYPE } from "../Defaults"
 import { makeChatsSocket } from "./chats"
 import { extractGroupMetadata } from "./groups"
+import { Boom } from "@hapi/boom"
 
 const getStatusFromReceiptType = (type: string | undefined) => {
     if(type === 'read' || type === 'read-self') {
@@ -24,6 +25,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		ev,
         authState,
 		ws,
+        assertSession,
         assertingPreKeys,
 		sendNode,
         relayMessage,
@@ -204,12 +206,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
                     emitParticipantsUpdate('add')
                     break
                 case WAMessageStubType.GROUP_CHANGE_ANNOUNCE:
-                    const announce = message.messageStubParameters[0] === 'on'
-                    emitGroupUpdate({ announce })
+                    const announceValue = message.messageStubParameters[0]
+                    emitGroupUpdate({ announce: announceValue === 'true' || announceValue === 'on' })
                     break
                 case WAMessageStubType.GROUP_CHANGE_RESTRICT:
-                    const restrict = message.messageStubParameters[0] === 'on'
-                    emitGroupUpdate({ restrict })
+                    const restrictValue = message.messageStubParameters[0]
+                    emitGroupUpdate({ restrict: restrictValue === 'true' || restrictValue === 'on' })
                     break
                 case WAMessageStubType.GROUP_CHANGE_SUBJECT:
                     chatUpdate.name = message.messageStubParameters[0]
@@ -272,9 +274,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
                     result.messageStubType = WAMessageStubType.GROUP_CREATE
                     result.messageStubParameters = [metadata.subject]
-                    result.key = {
-                        participant: jidNormalizedUser(metadata.owner)
-                    }
+                    result.key = { participant: metadata.owner }
 
                     ev.emit('chats.upsert', [{
                         id: metadata.id,
@@ -319,12 +319,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
                 case 'announcement':
                 case 'not_announcement':
                     result.messageStubType = WAMessageStubType.GROUP_CHANGE_ANNOUNCE
-                    result.messageStubParameters = [ (child.tag === 'announcement').toString() ]
+                    result.messageStubParameters = [ (child.tag === 'announcement') ? 'on' : 'off' ]
                     break
                 case 'locked':
                 case 'unlocked':
                     result.messageStubType = WAMessageStubType.GROUP_CHANGE_RESTRICT
-                    result.messageStubParameters = [ (child.tag === 'locked').toString() ]
+                    result.messageStubParameters = [ (child.tag === 'locked') ? 'on' : 'off' ]
                     break
                 
             }
@@ -464,28 +464,58 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
         }
     })
 
+    const sendMessagesAgain = async(key: proto.IMessageKey, ids: string[]) => {
+        const participant = key.participant || key.remoteJid
+        await assertSession(participant, true)
+
+        logger.debug({ key, ids }, 'recv retry request, forced new session')
+
+        const msgs = await Promise.all(
+            ids.map(id => (
+                config.getMessage({ ...key, id })
+            ))
+        )
+
+        for(let i = 0; i < msgs.length;i++) {
+            if(msgs[i]) {
+                await relayMessage(key.remoteJid, msgs[i], {
+                    messageId: ids[i],
+                    participant
+                })
+            } else {
+                logger.debug({ jid: key.remoteJid, id: ids[i] }, 'recv retry request, but message not available')
+            }
+        }
+    }
+
     const handleReceipt = async(node: BinaryNode) => {
         const { attrs, content } = node
-        const status = getStatusFromReceiptType(attrs.type)
+        const remoteJid = attrs.recipient || attrs.from 
+        const fromMe = attrs.recipient ? false : true
 
+        const ids = [attrs.id]
+        if(Array.isArray(content)) {
+            const items = getBinaryNodeChildren(content[0], 'item')
+            ids.push(...items.map(i => i.attrs.id))
+        }
+
+        const key: proto.IMessageKey = {
+            remoteJid,
+            id: '',
+            fromMe,
+            participant: attrs.participant
+        }
+
+        const status = getStatusFromReceiptType(attrs.type)
         if(typeof status !== 'undefined' && !areJidsSameUser(attrs.from, authState.creds.me?.id)) {
-            const ids = [attrs.id]
-            if(Array.isArray(content)) {
-                const items = getBinaryNodeChildren(content[0], 'item')
-                ids.push(...items.map(i => i.attrs.id))
-            }
-            
-            const remoteJid = attrs.recipient || attrs.from 
-            const fromMe = attrs.recipient ? false : true
             ev.emit('messages.update', ids.map(id => ({
-                key: {
-                    remoteJid,
-                    id: id,
-                    fromMe,
-                    participant: attrs.participant
-                },
+                key: { ...key, id },
                 update: { status }
             })))
+        }
+
+        if(attrs.type === 'retry') {
+            await sendMessagesAgain(key, ids)
         }
 
         await sendMessageAck(node, { class: 'receipt', type: attrs.type })

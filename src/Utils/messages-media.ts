@@ -10,7 +10,7 @@ import { URL } from 'url'
 import { join } from 'path'
 import { once } from 'events'
 import got, { Options, Response } from 'got'
-import { MessageType, WAMessageContent, WAProto, WAGenericMediaMessage, WAMediaUpload, MediaType } from '../Types'
+import { MessageType, WAMessageContent, WAProto, WAGenericMediaMessage, WAMediaUpload, MediaType, DownloadableMessage } from '../Types'
 import { generateMessageID } from './generics'
 import { hkdf } from './crypto'
 import { DEFAULT_ORIGIN } from '../Defaults'
@@ -55,9 +55,12 @@ export const compressImage = async (bufferOrFilePath: Readable | Buffer | string
     if(bufferOrFilePath instanceof Readable) {
         bufferOrFilePath = await toBuffer(bufferOrFilePath)
     }
-    const { read, MIME_JPEG } = await import('jimp')
+    const { read, MIME_JPEG, RESIZE_BILINEAR } = await import('jimp')
     const jimp = await read(bufferOrFilePath as any)
-    const result = await jimp.resize(32, 32).getBufferAsync(MIME_JPEG)
+    const result = await jimp
+        .quality(50)
+        .resize(32, 32, RESIZE_BILINEAR)
+        .getBufferAsync(MIME_JPEG)
     return result
 }
 export const generateProfilePicture = async (mediaUpload: WAMediaUpload) => {
@@ -70,12 +73,15 @@ export const generateProfilePicture = async (mediaUpload: WAMediaUpload) => {
         bufferOrFilePath = await toBuffer(mediaUpload.stream)
     }
     
-    const { read, MIME_JPEG } = await import('jimp')
+    const { read, MIME_JPEG, RESIZE_BILINEAR } = await import('jimp')
     const jimp = await read(bufferOrFilePath as any)
     const min = Math.min(jimp.getWidth (), jimp.getHeight ())
     const cropped = jimp.crop (0, 0, min, min)
     return {
-        img: await cropped.resize(640, 640).getBufferAsync(MIME_JPEG),
+        img: await cropped
+            .quality(50)
+            .resize(640, 640, RESIZE_BILINEAR)
+            .getBufferAsync(MIME_JPEG),
     }
 }
 /** gets the SHA256 of the given media message */
@@ -223,30 +229,96 @@ export const encryptedStream = async(media: WAMediaUpload, mediaType: MediaType,
         didSaveToTmpPath
     }
 }
+
 const DEF_HOST = 'mmg.whatsapp.net'
+const AES_CHUNK_SIZE = 16
+
+const toSmallestChunkSize = (num: number) => {
+    return Math.floor(num / AES_CHUNK_SIZE) * AES_CHUNK_SIZE
+}
+
+type MediaDownloadOptions = {
+    startByte?: number
+    endByte?: number
+}
+
 export const downloadContentFromMessage = async(
-    { mediaKey, directPath, url }: { mediaKey?: Uint8Array, directPath?: string, url?: string },
-    type: MediaType
+    { mediaKey, directPath, url }: DownloadableMessage,
+    type: MediaType,
+    { startByte, endByte }: MediaDownloadOptions = { }
 ) => {
     const downloadUrl = url || `https://${DEF_HOST}${directPath}`
+    let bytesFetched = 0
+    let startChunk = 0
+    let firstBlockIsIV = false
+    // if a start byte is specified -- then we need to fetch the previous chunk as that will form the IV
+    if(startByte) {
+        const chunk = toSmallestChunkSize(startByte || 0)
+        if(chunk) {
+            startChunk = chunk-AES_CHUNK_SIZE
+            bytesFetched = chunk
+
+            firstBlockIsIV = true
+        }
+    }
+    const endChunk = endByte ? toSmallestChunkSize(endByte || 0)+AES_CHUNK_SIZE : undefined
+    let rangeHeader: string | undefined = undefined
+    if(startChunk || endChunk) {
+        rangeHeader = `bytes=${startChunk}-`
+        if(endChunk) rangeHeader += endChunk
+    }
     // download the message
     const fetched = await getGotStream(downloadUrl, {
-        headers: { Origin: DEFAULT_ORIGIN }
+        headers: { 
+            Origin: DEFAULT_ORIGIN,
+            Range: rangeHeader
+        }
     })
+
     let remainingBytes = Buffer.from([])
     const { cipherKey, iv } = getMediaKeys(mediaKey, type)
-    const aes = Crypto.createDecipheriv("aes-256-cbc", cipherKey, iv)
+
+    let aes: Crypto.Decipher
+
+    const pushBytes = (bytes: Buffer, push: (bytes: Buffer) => void) => {
+        if(startByte || endByte) {
+            const start = bytesFetched >= startByte ? undefined : Math.max(startByte-bytesFetched, 0)
+            const end = bytesFetched+bytes.length < endByte ? undefined : Math.max(endByte-bytesFetched, 0)
+            
+            push(bytes.slice(start, end))
+    
+            bytesFetched += bytes.length
+        } else {
+            push(bytes)
+        }
+    }
 
     const output = new Transform({
         transform(chunk, _, callback) {
             let data = Buffer.concat([remainingBytes, chunk])
-            const decryptLength =
-                Math.floor(data.length / 16) * 16
+            
+            const decryptLength = toSmallestChunkSize(data.length)
             remainingBytes = data.slice(decryptLength)
             data = data.slice(0, decryptLength)
 
+            if(!aes) {
+                let ivValue = iv
+                if(firstBlockIsIV) {
+                    ivValue = data.slice(0, AES_CHUNK_SIZE)
+                    data = data.slice(AES_CHUNK_SIZE)
+                }
+
+                aes = Crypto.createDecipheriv("aes-256-cbc", cipherKey, ivValue)
+                // if an end byte that is not EOF is specified
+                // stop auto padding (PKCS7) -- otherwise throws an error for decryption
+                if(endByte) {
+                    aes.setAutoPadding(false)
+                }
+                
+            }
+
             try {
-                this.push(aes.update(data))
+                pushBytes(aes.update(data), b => this.push(b))
                 callback()
             } catch(error) {
                 callback(error)
@@ -254,7 +326,7 @@ export const downloadContentFromMessage = async(
         },
         final(callback) {
             try {
-                this.push(aes.final())
+                pushBytes(aes.final(), b => this.push(b))
                 callback()
             } catch(error) {
                 callback(error)
