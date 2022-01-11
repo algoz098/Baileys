@@ -1,6 +1,6 @@
 import { generateMessageID } from "../Utils";
 import { SocketConfig, GroupMetadata, ParticipantAction } from "../Types";
-import { BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, jidEncode } from "../WABinary";
+import { BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, jidEncode, jidNormalizedUser } from "../WABinary";
 import { makeSocket } from "./socket";
 
 export const makeGroupsSocket = (config: SocketConfig) => {
@@ -124,7 +124,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			const inviteNode = getBinaryNodeChild(result, 'invite')
 			return inviteNode.attrs.code
 		},
-	        groupRevokeInvite: async (jid: string) => {
+		groupRevokeInvite: async (jid: string) => {
 			const result = await groupQuery(jid, 'set', [{ tag: 'invite', attrs: {} }])
 			const inviteNode = getBinaryNodeChild(result, 'invite')
 			return inviteNode.attrs.code
@@ -196,11 +196,11 @@ export const extractGroupMetadata = (result: BinaryNode) => {
 		id: groupId,
 		subject: group.attrs.subject,
 		creation: +group.attrs.creation,
-		owner: group.attrs.creator,
+		owner: group.attrs.creator ? jidNormalizedUser(group.attrs.creator) : undefined,
 		desc,
 		descId,
-		restrict: !!getBinaryNodeChild(result, 'locked'),
-		announce: !!getBinaryNodeChild(result, 'announcement'),
+		restrict: !!getBinaryNodeChild(group, 'locked'),
+		announce: !!getBinaryNodeChild(group, 'announcement'),
 		participants: getBinaryNodeChildren(group, 'participant').map(
 			({ attrs }) => {
 				return {

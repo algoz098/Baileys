@@ -4,8 +4,8 @@ import { promisify } from "util"
 import WebSocket from "ws"
 import { randomBytes } from 'crypto'
 import { proto } from '../../WAProto'
-import { DisconnectReason, SocketConfig, BaileysEventEmitter, ConnectionState, AuthenticationCreds } from "../Types"
-import { Curve, generateRegistrationNode, configureSuccessfulPairing, generateLoginNode, encodeBigEndian, promiseTimeout, generateOrGetPreKeys, xmppSignedPreKey, xmppPreKey, getPreKeys, makeNoiseHandler, useSingleFileAuthState } from "../Utils"
+import { DisconnectReason, SocketConfig, BaileysEventEmitter, AuthenticationCreds } from "../Types"
+import { Curve, generateRegistrationNode, configureSuccessfulPairing, generateLoginNode, encodeBigEndian, promiseTimeout, generateOrGetPreKeys, xmppSignedPreKey, xmppPreKey, getPreKeys, makeNoiseHandler, useSingleFileAuthState, addTransactionCapability, bindWaitForConnectionUpdate, printQRIfNecessaryListener } from "../Utils"
 import { DEFAULT_ORIGIN, DEF_TAG_PREFIX, DEF_CALLBACK_PREFIX, KEY_BUNDLE_TYPE } from "../Defaults"
 import { assertNodeErrorFree, BinaryNode, encodeBinaryNode, S_WHATSAPP_NET, getBinaryNodeChild } from '../WABinary'
 
@@ -68,9 +68,12 @@ export const makeSocket = ({
 
 	const sendPromise = promisify<void>(ws.send)
 	/** send a raw buffer */
-	const sendRawMessage = (data: Buffer | Uint8Array) => {
+	const sendRawMessage = async(data: Buffer | Uint8Array) => {
+        if(ws.readyState !== ws.OPEN) {
+            throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+        }
         const bytes = noise.encodeFrame(data)
-        return sendPromise.call(ws, bytes) as Promise<void>
+        await sendPromise.call(ws, bytes) as Promise<void>
     }
     /** send a binary node */
     const sendNode = (node: BinaryNode) => {
@@ -196,10 +199,8 @@ export const makeSocket = ({
         if(!creds.serverHasPreKeys) {
             update.serverHasPreKeys = true
         }
-       
-        await Promise.all(
-            Object.keys(newPreKeys).map(k => authState.keys.setPreKey(+k, newPreKeys[+k]))
-        )
+
+        await authState.keys.set({ 'pre-key': newPreKeys })
 
         const preKeys = await getPreKeys(authState.keys, preKeysRange[0], preKeysRange[0] + preKeysRange[1])
         await execute(preKeys)
@@ -388,28 +389,6 @@ export const makeSocket = ({
 
         end(new Boom('Intentional Logout', { statusCode: DisconnectReason.loggedOut }))
     }
-    /** Waits for the connection to WA to reach a state */
-	const waitForConnectionUpdate = async(check: (u: Partial<ConnectionState>) => boolean, timeoutMs?: number) => {
-        let listener: (item: Partial<ConnectionState>) => void
-        await (
-            promiseTimeout(
-                timeoutMs, 
-                (resolve, reject) => {
-                    listener = (update) => {
-                        if(check(update)) {
-                            resolve()
-                        } else if(update.connection == 'close') {
-							reject(update.lastDisconnect?.error || new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed }))
-						}
-					}
-                    ev.on('connection.update', listener)
-                }
-            )
-            .finally(() => (
-				ev.off('connection.update', listener)
-			))
-        )
-    }
 
 	ws.on('message', onMessageRecieved)
 	ws.on('open', validateConnection)
@@ -421,15 +400,6 @@ export const makeSocket = ({
     })
     // QR gen
     ws.on('CB:iq,type:set,pair-device', async (stanza: BinaryNode) => {
-        const postQR = async(qr: string) => {
-            if(printQRInTerminal) {
-                const QR = await import('qrcode-terminal').catch(err => {
-                    logger.error('add `qrcode-terminal` as a dependency to auto-print QR')
-                })
-                QR?.generate(qr, { small: true })
-            }
-        }
-
         const iq: BinaryNode = { 
             tag: 'iq', 
             attrs: {
@@ -449,14 +419,13 @@ export const makeSocket = ({
         const genPairQR = () => {
             const ref = refs.shift()
             if(!ref) {
-                end(new Boom('QR refs attempts ended', { statusCode: DisconnectReason.restartRequired }))
+                end(new Boom('QR refs attempts ended', { statusCode: DisconnectReason.timedOut }))
                 return
             }
 
             const qr = [ref, noiseKeyB64, identityKeyB64, advB64].join(',')
     
             ev.emit('connection.update', { qr })
-            postQR(qr)
 
             qrTimer = setTimeout(genPairQR, qrMs)
             qrMs = 20_000 // shorter subsequent qrs
@@ -529,7 +498,7 @@ export const makeSocket = ({
     })
 
     ws.on('CB:ib,,downgrade_webclient', () => {
-        end(new Boom('Multi-device beta not joined', { statusCode: DisconnectReason.notJoinedBeta }))
+        end(new Boom('Multi-device beta not joined', { statusCode: DisconnectReason.multideviceMismatch }))
     })
 
     process.nextTick(() => {
@@ -538,10 +507,19 @@ export const makeSocket = ({
     // update credentials when required
     ev.on('creds.update', update => Object.assign(creds, update))
 
+    if(printQRInTerminal) {
+		printQRIfNecessaryListener(ev, logger)
+	}
+
 	return {
+        type: 'md' as 'md',
         ws,
         ev,
-        authState,
+        authState: {
+            creds,
+            // add capability
+            keys: addTransactionCapability(authState.keys, logger)
+        },
         get user () {
             return authState.creds.me
         },
@@ -554,7 +532,8 @@ export const makeSocket = ({
         sendNode,
         logout,
         end,
-        waitForConnectionUpdate
+        /** Waits for the connection to WA to reach a state */
+        waitForConnectionUpdate: bindWaitForConnectionUpdate(ev)
 	}
 }
 export type Socket = ReturnType<typeof makeSocket>
