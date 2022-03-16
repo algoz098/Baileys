@@ -1,11 +1,12 @@
 import { Boom } from '@hapi/boom'
+import axios from 'axios'
 import { randomBytes } from 'crypto'
 import { platform, release } from 'os'
 import { Logger } from 'pino'
 import { proto } from '../../WAProto'
-import { CommonBaileysEventEmitter, DisconnectReason } from '../Types'
+import { version as baileysVersion } from '../Defaults/baileys-version.json'
+import { CommonBaileysEventEmitter, ConnectionState, DisconnectReason, WAVersion } from '../Types'
 import { Binary } from '../WABinary'
-import { ConnectionState } from '..'
 
 const PLATFORM_MAP = {
 	'aix': 'AIX',
@@ -32,14 +33,13 @@ export const BufferJSON = {
 	},
 	reviver: (_, value: any) => {
 		if(typeof value === 'object' && !!value && (value.buffer === true || value.type === 'Buffer')) {
-			const val = value.data || value.value 
-			return typeof val === 'string' ? Buffer.from(val, 'base64') : Buffer.from(val)
+			const val = value.data || value.value
+			return typeof val === 'string' ? Buffer.from(val, 'base64') : Buffer.from(val || [])
 		}
 
 		return value
-	} 
+	}
 }
-
 
 export const writeRandomPadMax16 = (e: Binary) => {
 	function r(e: Binary, t: number) {
@@ -47,7 +47,7 @@ export const writeRandomPadMax16 = (e: Binary) => {
 			e.writeUint8(t)
 		}
 	}
-  
+
 	var t = randomBytes(1)
 	r(e, 1 + (15 & t[0]))
 	return e
@@ -58,12 +58,12 @@ export const unpadRandomMax16 = (e: Uint8Array | Buffer) => {
 	if(0 === t.length) {
 		throw new Error('unpadPkcs7 given empty bytes')
 	}
-  
+
 	var r = t[t.length - 1]
 	if(r > t.length) {
 		throw new Error(`unpad given ${t.length} bytes, but pad is ${r}`)
 	}
-  
+
 	return new Uint8Array(t.buffer, t.byteOffset, t.length - r)
 }
 
@@ -88,7 +88,7 @@ export const encodeInt = (e: number, t: number) => {
 	return a
 }
 
-export const encodeBigEndian = (e: number, t=4) => {
+export const encodeBigEndian = (e: number, t = 4) => {
 	let r = e
 	const a = new Uint8Array(t)
 	for(let i = t - 1; i >= 0; i--) {
@@ -121,7 +121,7 @@ export function shallowChanges <T>(old: T, current: T, { lookForDeletedKeys }: {
 }
 
 /** unix timestamp of a date in seconds */
-export const unixTimestampSeconds = (date: Date = new Date()) => Math.floor(date.getTime()/1000)
+export const unixTimestampSeconds = (date: Date = new Date()) => Math.floor(date.getTime() / 1000)
 
 export type DebouncedTimeout = ReturnType<typeof debouncedTimeout>
 
@@ -144,6 +144,7 @@ export const debouncedTimeout = (intervalMs: number = 1000, task: () => void = u
 }
 
 export const delay = (ms: number) => delayCancellable (ms).delay
+
 export const delayCancellable = (ms: number) => {
 	const stack = new Error().stack
 	let timeout: NodeJS.Timeout
@@ -174,7 +175,7 @@ export async function promiseTimeout<T>(ms: number, promise: (resolve: (v?: T)=>
 
 	const stack = new Error().stack
 	// Create a promise that rejects in <ms> milliseconds
-	const { delay, cancel } = delayCancellable (ms) 
+	const { delay, cancel } = delayCancellable (ms)
 	const p = new Promise ((resolve, reject) => {
 		delay
 			.then(() => reject(
@@ -185,8 +186,8 @@ export async function promiseTimeout<T>(ms: number, promise: (resolve: (v?: T)=>
 					}
 				})
 			))
-			.catch (err => reject(err)) 
-        
+			.catch (err => reject(err))
+
 		promise (resolve, reject)
 	})
 		.finally (cancel)
@@ -201,7 +202,7 @@ export const bindWaitForConnectionUpdate = (ev: CommonBaileysEventEmitter<any>) 
 		let listener: (item: Partial<ConnectionState>) => void
 		await (
 			promiseTimeout(
-				timeoutMs, 
+				timeoutMs,
 				(resolve, reject) => {
 					listener = (update) => {
 						if(check(update)) {
@@ -231,4 +232,25 @@ export const printQRIfNecessaryListener = (ev: CommonBaileysEventEmitter<any>, l
 			QR?.generate(qr, { small: true })
 		}
 	})
+}
+
+/**
+ * utility that fetches latest baileys version from the master branch.
+ * Use to ensure your WA connection is always on the latest version
+ */
+export const fetchLatestBaileysVersion = async() => {
+	const URL = 'https://raw.githubusercontent.com/adiwajshing/Baileys/master/src/Defaults/baileys-version.json'
+	try {
+		const result = await axios.get<{ version: WAVersion }>(URL, { responseType: 'json' })
+		return {
+			version: result.data.version,
+			isLatest: true
+		}
+	} catch(error) {
+		return {
+			version: baileysVersion as WAVersion,
+			isLatest: false,
+			error
+		}
+	}
 }

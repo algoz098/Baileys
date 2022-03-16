@@ -2,7 +2,7 @@ import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto'
 import { AppStateChunk, Chat, ChatModification, ChatMutation, Contact, LTHashState, PresenceData, SocketConfig, WABusinessHoursConfig, WABusinessProfile, WAMediaUpload, WAPatchCreate, WAPatchName, WAPresence } from '../Types'
 import { chatModificationToAppPatch, decodePatches, decodeSyncdSnapshot, encodeSyncdPatch, extractSyncdPatches, generateProfilePicture, newLTHashState, toNumber } from '../Utils'
-import makeMutex from '../Utils/make-mutex'
+import { makeMutex } from '../Utils/make-mutex'
 import { BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, jidNormalizedUser, reduceBinaryNodeToDictionary, S_WHATSAPP_NET } from '../WABinary'
 import { makeMessagesSocket } from './messages-send'
 
@@ -11,7 +11,7 @@ const MAX_SYNC_ATTEMPTS = 5
 export const makeChatsSocket = (config: SocketConfig) => {
 	const { logger } = config
 	const sock = makeMessagesSocket(config)
-	const { 
+	const {
 		ev,
 		ws,
 		authState,
@@ -19,10 +19,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		sendNode,
 		query,
 		fetchPrivacySettings,
+		onUnexpectedError,
 	} = sock
 
 	const mutationMutex = makeMutex()
-
+	/// helper function to fetch an app state sync key
 	const getAppStateSyncKey = async(keyId: string) => {
 		const { [keyId]: key } = await authState.keys.get('app-state-sync-key', [keyId])
 		return key
@@ -95,7 +96,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const fetchStatus = async(jid: string) => {
 		const [result] = await interactiveQuery(
-			[{ tag: 'user', attrs: { jid } }], 
+			[{ tag: 'user', attrs: { jid } }],
 			{ tag: 'status', attrs: { } }
 		)
 		if(result) {
@@ -130,8 +131,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const result = await query({
 			tag: 'iq',
 			attrs: {
-				xmlns: 'blocklist', 
-				to: S_WHATSAPP_NET, 
+				xmlns: 'blocklist',
+				to: S_WHATSAPP_NET,
 				type: 'get'
 			}
 		})
@@ -176,35 +177,30 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				}]
 			}]
 		})
-		const profiles = getBinaryNodeChild(getBinaryNodeChild(results, 'business_profile'), 'profile')
-		if(!profiles) {
-			// if not bussines
-			if(logger.level === 'trace') {
-				logger.trace({ jid }, 'Not bussines')
-			}
 
-			return
+		const profileNode = getBinaryNodeChild(results, 'business_profile')
+		const profiles = getBinaryNodeChild(profileNode, 'profile')
+		if(profiles) {
+			const address = getBinaryNodeChild(profiles, 'address')
+			const description = getBinaryNodeChild(profiles, 'description')
+			const website = getBinaryNodeChild(profiles, 'website')
+			const email = getBinaryNodeChild(profiles, 'email')
+			const category = getBinaryNodeChild(getBinaryNodeChild(profiles, 'categories'), 'category')
+			const business_hours = getBinaryNodeChild(profiles, 'business_hours')
+			const business_hours_config = business_hours && getBinaryNodeChildren(business_hours, 'business_hours_config')
+			return {
+				wid: profiles.attrs?.jid,
+				address: address?.content.toString(),
+				description: description?.content.toString(),
+				website: [website?.content.toString()],
+				email: email?.content.toString(),
+				category: category?.content.toString(),
+				business_hours: {
+					timezone: business_hours?.attrs?.timezone,
+					business_config: business_hours_config?.map(({ attrs }) => attrs as unknown as WABusinessHoursConfig)
+				}
+			} as unknown as WABusinessProfile
 		}
-
-		const address = getBinaryNodeChild(profiles, 'address')
-		const description = getBinaryNodeChild(profiles, 'description')
-		const website = getBinaryNodeChild(profiles, 'website')
-		const email = getBinaryNodeChild(profiles, 'email')
-		const category = getBinaryNodeChild(getBinaryNodeChild(profiles, 'categories'), 'category')
-		const business_hours = getBinaryNodeChild(profiles, 'business_hours')
-		const business_hours_config = business_hours && getBinaryNodeChildren(business_hours, 'business_hours_config')
-		return {
-			wid: profiles.attrs?.jid,
-			address: address?.content.toString(),
-			description: description?.content.toString(),
-			website: [website?.content.toString()],
-			email: email?.content.toString(),
-			category: category?.content.toString(),
-			business_hours: {
-				timezone: business_hours?.attrs?.timezone,
-				business_config: business_hours_config?.map(({ attrs }) => attrs as unknown as WABusinessHoursConfig)
-			}
-		} as unknown as WABusinessProfile
 	}
 
 	const updateAccountSyncTimestamp = async(fromTimestamp: number | string) => {
@@ -223,7 +219,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					attrs: {
 						type: 'account_sync',
 						timestamp: fromTimestamp.toString(),
-					}  
+					}
 				}
 			]
 		})
@@ -238,7 +234,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		await authState.keys.transaction(
 			async() => {
 				const collectionsToHandle = new Set<string>(collections)
-				// in case something goes wrong -- ensure we don't enter a loop that cannot be exited from 
+				// in case something goes wrong -- ensure we don't enter a loop that cannot be exited from
 				const attemptsMap = { } as { [T in WAPatchName]: number | undefined }
 				// keep executing till all collections are done
 				// sometimes a single patch request will not return all the patches (God knows why)
@@ -265,9 +261,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 						nodes.push({
 							tag: 'collection',
-							attrs:  { 
-								name, 
-								version: state.version.toString(), 
+							attrs:  {
+								name,
+								version: state.version.toString(),
 								// return snapshot if being synced from scratch
 								return_snapshot: (!state.version).toString()
 							}
@@ -289,7 +285,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 							}
 						]
 					})
-                    
+
 					const decoded = await extractSyncdPatches(result) // extract from binary node
 					for(const key in decoded) {
 						const name = key as WAPatchName
@@ -298,7 +294,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 							if(snapshot) {
 								const { state: newState, mutations } = await decodeSyncdSnapshot(name, snapshot, getAppStateSyncKey, initialVersionMap[name])
 								states[name] = newState
-    
+
 								logger.info(`restored state of ${name} from snapshot to v${newState.version} with ${mutations.length} mutations`)
 
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })
@@ -309,14 +305,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 							// only process if there are syncd patches
 							if(patches.length) {
 								const { newMutations, state: newState } = await decodePatches(name, patches, states[name], getAppStateSyncKey, initialVersionMap[name])
-    
+
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })
-                    
+
 								logger.info(`synced ${name} to v${newState.version}`)
 								if(newMutations.length) {
 									logger.trace({ newMutations, name }, 'recv new mutations')
 								}
-    
+
 								appStateChunk.totalMutations.push(...newMutations)
 							}
 
@@ -431,21 +427,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const resyncMainAppState = async() => {
-        
 		logger.debug('resyncing main app state')
-        
+
 		await (
 			mutationMutex.mutex(
-				() => resyncAppState([ 
-					'critical_block', 
-					'critical_unblock_low', 
-					'regular_high', 
-					'regular_low', 
-					'regular' 
+				() => resyncAppState([
+					'critical_block',
+					'critical_unblock_low',
+					'regular_high',
+					'regular_low',
+					'regular'
 				])
 			)
 				.catch(err => (
-					logger.warn({ trace: err.stack }, 'failed to sync app state')
+					onUnexpectedError(err, 'main app sync')
 				))
 		)
 	}
@@ -458,7 +453,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		for(const { syncAction: { value: action }, index: [_, id, msgId, fromMe] } of actions) {
 			const update: Partial<Chat> = { id }
 			if(action?.muteAction) {
-				update.mute = action.muteAction?.muted ? 
+				update.mute = action.muteAction?.muted ?
 					toNumber(action.muteAction!.muteEndTimestamp!) :
 					undefined
 			} else if(action?.archiveChatAction) {
@@ -480,7 +475,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			} else if(action?.pushNameSetting) {
 				const me = {
 					...authState.creds.me!,
-					name:  action?.pushNameSetting?.name!
+					name: action?.pushNameSetting?.name!
 				}
 				ev.emit('creds.update', { me })
 			} else if(action?.pinAction) {
@@ -522,7 +517,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				logger.debug({ patch: patchCreate }, 'applying app patch')
 
 				await resyncAppState([name])
-				const { [name]: initial } = await authState.keys.get('app-state-sync-version', [name])
+
+				let { [name]: initial } = await authState.keys.get('app-state-sync-version', [name])
+				initial = initial || newLTHashState()
+
 				const { patch, state } = await encodeSyncdPatch(
 					patchCreate,
 					myAppStateKeyId,
@@ -546,7 +544,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									tag: 'collection',
 									attrs: {
 										name,
-										version: (state.version-1).toString(),
+										version: (state.version - 1).toString(),
 										return_snapshot: 'false'
 									},
 									content: [
@@ -562,9 +560,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					]
 				}
 				await query(node)
-        
+
 				await authState.keys.set({ 'app-state-sync-version': { [name]: state } })
-                
+
 				if(config.emitOwnEvents) {
 					const result = await decodePatches(name, [{ ...patch, version: { version: state.version }, }], initial, getAppStateSyncKey)
 					processSyncActions(result.newMutations)
@@ -589,7 +587,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		})
 
 		const propsNode = getBinaryNodeChild(abtNode, 'props')
-        
+
 		let props: { [_: string]: string } = { }
 		if(propsNode) {
 			props = reduceBinaryNodeToDictionary(propsNode, 'prop')
@@ -616,7 +614,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		})
 
 		const propsNode = getBinaryNodeChild(resultNode, 'props')
-        
+
 		let props: { [_: string]: string } = { }
 		if(propsNode) {
 			props = reduceBinaryNodeToDictionary(propsNode, 'prop')
@@ -637,6 +635,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		return appPatch(patch)
 	}
 
+	/**
+	 * queries need to be fired on connection open
+	 * help ensure parity with WA Web
+	 * */
+	const fireInitQueries = () => (
+		Promise.all([
+			fetchAbt(),
+			fetchProps(),
+			fetchBlocklist(),
+			fetchPrivacySettings(),
+			sendPresenceUpdate('available')
+		])
+	)
+
 	ws.on('CB:presence', handlePresenceUpdate)
 	ws.on('CB:chatstate', handlePresenceUpdate)
 
@@ -645,13 +657,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const type = attrs.type
 		switch (type) {
 		case 'account_sync':
-			let { lastAccountSyncTimestamp } = authState.creds
-			if(lastAccountSyncTimestamp) {
-				await updateAccountSyncTimestamp(lastAccountSyncTimestamp)
+			if(attrs.timestamp) {
+				let { lastAccountSyncTimestamp } = authState.creds
+				if(lastAccountSyncTimestamp) {
+					await updateAccountSyncTimestamp(lastAccountSyncTimestamp)
+				}
+
+				lastAccountSyncTimestamp = +attrs.timestamp
+				ev.emit('creds.update', { lastAccountSyncTimestamp })
 			}
 
-			lastAccountSyncTimestamp = +attrs.timestamp
-			ev.emit('creds.update', { lastAccountSyncTimestamp })                
 			break
 		default:
 			logger.info({ node }, 'received unknown sync')
@@ -674,16 +689,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	ev.on('connection.update', ({ connection }) => {
 		if(connection === 'open') {
-			sendPresenceUpdate('available')
-			fetchBlocklist()
-			fetchPrivacySettings()
-			fetchAbt()
-			fetchProps()
+			fireInitQueries()
+				.catch(
+					error => onUnexpectedError(error, 'connection open requests')
+				)
 		}
 	})
 
 	return {
-		...sock, 
+		...sock,
 		appPatch,
 		sendPresenceUpdate,
 		presenceSubscribe,

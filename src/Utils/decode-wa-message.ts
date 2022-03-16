@@ -5,12 +5,11 @@ import { areJidsSameUser, BinaryNode, isJidBroadcast, isJidGroup, isJidStatusBro
 import { unpadRandomMax16 } from './generics'
 import { decryptGroupSignalProto, decryptSignalProto, processSenderKeyMessage } from './signal'
 
+const NO_MESSAGE_FOUND_ERROR_TEXT = 'No message found'
+
 type MessageType = 'chat' | 'peer_broadcast' | 'other_broadcast' | 'group' | 'direct_peer_status' | 'other_status'
 
-export const decodeMessageStanza = async(stanza: BinaryNode, auth: AuthenticationState) => {
-	//const deviceIdentity = (stanza.content as BinaryNodeM[])?.find(m => m.tag === 'device-identity')
-	//const deviceIdentityBytes = deviceIdentity ? deviceIdentity.content as Buffer : undefined
-
+export const decodeMessageStanza = (stanza: BinaryNode, auth: AuthenticationState) => {
 	let msgType: MessageType
 	let chatId: string
 	let author: string
@@ -63,7 +62,7 @@ export const decodeMessageStanza = async(stanza: BinaryNode, auth: Authenticatio
 
 	const fromMe = isMe(stanza.attrs.participant || stanza.attrs.from)
 	const pushname = stanza.attrs.notify
-    
+
 	const key: WAMessageKey = {
 		remoteJid: chatId,
 		fromMe,
@@ -81,48 +80,60 @@ export const decodeMessageStanza = async(stanza: BinaryNode, auth: Authenticatio
 		fullMessage.status = proto.WebMessageInfo.WebMessageInfoStatus.SERVER_ACK
 	}
 
-	if(Array.isArray(stanza.content)) {
-		for(const { tag, attrs, content } of stanza.content) {
-			if(tag !== 'enc') {
-				continue
+	return {
+		fullMessage,
+		decryptionTask: (async() => {
+			let decryptables = 0
+			if(Array.isArray(stanza.content)) {
+				for(const { tag, attrs, content } of stanza.content) {
+					if(tag !== 'enc') {
+						continue
+					}
+
+					if(!(content instanceof Uint8Array)) {
+						continue
+					}
+
+					decryptables += 1
+
+					let msgBuffer: Buffer
+
+					try {
+						const e2eType = attrs.type
+						switch (e2eType) {
+						case 'skmsg':
+							msgBuffer = await decryptGroupSignalProto(sender, author, content, auth)
+							break
+						case 'pkmsg':
+						case 'msg':
+							const user = isJidUser(sender) ? sender : author
+							msgBuffer = await decryptSignalProto(user, e2eType, content as Buffer, auth)
+							break
+						}
+
+						let msg: proto.IMessage = proto.Message.decode(unpadRandomMax16(msgBuffer))
+						msg = msg.deviceSentMessage?.message || msg
+						if(msg.senderKeyDistributionMessage) {
+							await processSenderKeyMessage(author, msg.senderKeyDistributionMessage, auth)
+						}
+
+						if(fullMessage.message) {
+							Object.assign(fullMessage.message, msg)
+						} else {
+							fullMessage.message = msg
+						}
+					} catch(error) {
+						fullMessage.messageStubType = proto.WebMessageInfo.WebMessageInfoStubType.CIPHERTEXT
+						fullMessage.messageStubParameters = [error.message]
+					}
+				}
 			}
 
-			if(!(content instanceof Uint8Array)) {
-				continue
-			} 
-
-			let msgBuffer: Buffer
-
-			try {
-				const e2eType = attrs.type
-				switch (e2eType) {
-				case 'skmsg':
-					msgBuffer = await decryptGroupSignalProto(sender, author, content, auth)
-					break
-				case 'pkmsg':
-				case 'msg':
-					const user = isJidUser(sender) ? sender : author
-					msgBuffer = await decryptSignalProto(user, e2eType, content as Buffer, auth)
-					break
-				}
-
-				let msg: proto.IMessage = proto.Message.decode(unpadRandomMax16(msgBuffer))
-				msg = msg.deviceSentMessage?.message || msg
-				if(msg.senderKeyDistributionMessage) {
-					await processSenderKeyMessage(author, msg.senderKeyDistributionMessage, auth)
-				}
-
-				if(fullMessage.message) {
-					Object.assign(fullMessage.message, msg)
-				} else {
-					fullMessage.message = msg
-				}
-			} catch(error) {
+			// if nothing was found to decrypt
+			if(!decryptables) {
 				fullMessage.messageStubType = proto.WebMessageInfo.WebMessageInfoStubType.CIPHERTEXT
-				fullMessage.messageStubParameters = [error.message]
+				fullMessage.messageStubParameters = [NO_MESSAGE_FOUND_ERROR_TEXT]
 			}
-		}
+		})()
 	}
-
-	return fullMessage
 }

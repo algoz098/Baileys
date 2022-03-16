@@ -1,6 +1,6 @@
 {
   "name": "@adiwajshing/baileys",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "WhatsApp API",
   "homepage": "https://github.com/adiwajshing/Baileys",
   "main": "lib/index.js",
@@ -24,7 +24,7 @@
     "build:tsc": "tsc",
     "example": "node --inspect -r ts-node/register Example/example.ts",
     "example:legacy": "node --inspect -r ts-node/register Example/example-legacy.ts",
-    "gen-protobuf": "bash src/BinaryNode/GenerateStatics.sh",
+    "gen-protobuf": "sh WAProto/GenerateStatics.sh",
     "browser-decode": "yarn ts-node src/BrowserMessageDecoding.ts",
     "lint": "eslint ./src --ext .js,.ts,.jsx,.tsx",
     "lint:fix": "eslint ./src --fix --ext .js,.ts,.jsx,.tsx"
@@ -46,10 +46,24 @@
     "ws": "^8.0.0"
   },
   "peerDependencies": {
+    "@adiwajshing/keyed-db": "^0.2.4",
     "jimp": "^0.16.1",
     "qrcode-terminal": "^0.12.0",
-    "sharp": "^0.29.3",
-    "@adiwajshing/keyed-db": "^0.2.4"
+    "sharp": "^0.29.3"
+  },
+  "peerDependenciesMeta": {
+    "@adiwajshing/keyed-db": {
+      "optional": true
+    },
+    "jimp": {
+      "optional": true
+    },
+    "qrcode-terminal": {
+      "optional": true
+    },
+    "sharp": {
+      "optional": true
+    }
   },
   "files": [
     "lib/*",
@@ -73,7 +87,7 @@
     "sharp": "^0.29.3",
     "ts-jest": "^27.0.3",
     "ts-node": "^10.0.0",
-    "typedoc": "^0.20.0-beta.27",
+    "typedoc": "^0.22.0",
     "typescript": "^4.0.0"
   }
 }

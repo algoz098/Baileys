@@ -1,6 +1,7 @@
 import P from 'pino'
 import type { CommonSocketConfig, LegacySocketConfig, MediaType, SocketConfig } from '../Types'
 import { Browsers } from '../Utils'
+import { version } from './baileys-version.json'
 
 export const UNAUTHORIZED_CODES = [401, 403, 419]
 
@@ -9,7 +10,7 @@ export const DEF_CALLBACK_PREFIX = 'CB:'
 export const DEF_TAG_PREFIX = 'TAG:'
 export const PHONE_CONNECTION_CB = 'CB:Pong'
 
-export const WA_DEFAULT_EPHEMERAL = 7*24*60*60
+export const WA_DEFAULT_EPHEMERAL = 7 * 24 * 60 * 60
 
 export const NOISE_MODE = 'Noise_XX_25519_AESGCM_SHA256\0\0\0\0'
 export const NOISE_WA_HEADER = new Uint8Array([87, 65, 5, 2]) // last is "DICT_VERSION"
@@ -18,7 +19,7 @@ export const NOISE_WA_HEADER = new Uint8Array([87, 65, 5, 2]) // last is "DICT_V
 export const URL_REGEX = /[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_+.~#?&//=]*)?/gi
 
 const BASE_CONNECTION_CONFIG: CommonSocketConfig<any> = {
-	version: [2, 2149, 4],
+	version: version as any,
 	browser: Browsers.baileys('Chrome'),
 
 	waWebSocketUrl: 'wss://web.whatsapp.com/ws/chat',
@@ -56,4 +57,4 @@ export const MEDIA_PATH_MAP: { [T in MediaType]: string } = {
 
 export const MEDIA_KEYS = Object.keys(MEDIA_PATH_MAP) as MediaType[]
 
-export const KEY_BUNDLE_TYPE = ''
+export const KEY_BUNDLE_TYPE = Buffer.from([5])

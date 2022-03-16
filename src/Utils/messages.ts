@@ -2,23 +2,26 @@ import { Boom } from '@hapi/boom'
 import { promises as fs } from 'fs'
 import { proto } from '../../WAProto'
 import { MEDIA_KEYS, URL_REGEX, WA_DEFAULT_EPHEMERAL } from '../Defaults'
-import { 
-	AnyMediaMessageContent, 
-	AnyMessageContent, 
-	MediaGenerationOptions, 
-	MediaType, 
-	MessageContentGenerationOptions, 
-	MessageGenerationOptions, 
+import {
+	AnyMediaMessageContent,
+	AnyMessageContent,
+	MediaGenerationOptions,
+	MediaType,
+	MessageContentGenerationOptions,
+	MessageGenerationOptions,
 	MessageGenerationOptionsFromContent,
-	MessageType, 
-	WAMediaUpload, 
-	WAMessage, 
-	WAMessageContent, 
+	MessageType,
+	MessageUserReceipt,
+	WAMediaUpload,
+	WAMessage,
+	WAMessageContent,
 	WAMessageStatus,
-	WAProto, 
-	WATextMessage } from '../Types'
+	WAProto,
+	WATextMessage
+} from '../Types'
 import { generateMessageID, unixTimestampSeconds } from './generics'
 import { encryptedStream, generateThumbnail, getAudioDuration } from './messages-media'
+import { downloadContentFromMessage, MediaDownloadOptions } from '.'
 
 type MediaUploadData = {
 	media: WAMediaUpload
@@ -52,7 +55,7 @@ const MessageTypeProto = {
 const ButtonType = proto.ButtonsMessage.ButtonsMessageHeaderType
 
 export const prepareWAMessageMedia = async(
-	message: AnyMediaMessageContent, 
+	message: AnyMediaMessageContent,
 	options: MediaGenerationOptions
 ) => {
 	const logger = options.logger
@@ -64,15 +67,15 @@ export const prepareWAMessageMedia = async(
 		}
 	}
 
-	const uploadData: MediaUploadData = { 
+	const uploadData: MediaUploadData = {
 		...message,
 		media: message[mediaType]
 	}
 	delete uploadData[mediaType]
 	// check if cacheable + generate cache key
-	const cacheableKey = typeof uploadData.media === 'object' && 
-			('url' in uploadData.media) && 
-			!!uploadData.media.url && 
+	const cacheableKey = typeof uploadData.media === 'object' &&
+			('url' in uploadData.media) &&
+			!!uploadData.media.url &&
 			!!options.mediaCache && (
 	// generate the key
 		mediaType + ':' + uploadData.media.url!.toString()
@@ -91,7 +94,7 @@ export const prepareWAMessageMedia = async(
 		const mediaBuff: Buffer = options.mediaCache!.get(cacheableKey)
 		if(mediaBuff) {
 			logger?.debug({ cacheableKey }, 'got media cache hit')
-			
+
 			const obj = WAProto.Message.decode(mediaBuff)
 			const key = `${mediaType}Message`
 
@@ -103,7 +106,7 @@ export const prepareWAMessageMedia = async(
 	}
 
 	const requiresDurationComputation = mediaType === 'audio' && typeof uploadData.seconds === 'undefined'
-	const requiresThumbnailComputation = (mediaType === 'image' || mediaType === 'video') && 
+	const requiresThumbnailComputation = (mediaType === 'image' || mediaType === 'video') &&
 										(typeof uploadData['jpegThumbnail'] === 'undefined')
 	const requiresOriginalForSomeProcessing = requiresDurationComputation || requiresThumbnailComputation
 	const {
@@ -116,7 +119,7 @@ export const prepareWAMessageMedia = async(
 		didSaveToTmpPath
 	} = await encryptedStream(uploadData.media, mediaType, requiresOriginalForSomeProcessing)
 	 // url safe Base64 encode the SHA256 hash of the body
-	const fileEncSha256B64 = encodeURIComponent( 
+	const fileEncSha256B64 = encodeURIComponent(
 		fileEncSha256.toString('base64')
 			.replace(/\+/g, '-')
 			.replace(/\//g, '_')
@@ -214,7 +217,10 @@ export const generateForwardMessageContent = (
 	}
 
 	// hacky copy
-	content = proto.Message.decode(proto.Message.encode(message.message).finish())
+	content = content?.ephemeralMessage?.message ||
+				content?.viewOnceMessage?.message ||
+				content
+	content = proto.Message.decode(proto.Message.encode(content).finish())
 
 	let key = Object.keys(content)[0] as MessageType
 
@@ -237,7 +243,7 @@ export const generateForwardMessageContent = (
 }
 
 export const generateWAMessageContent = async(
-	message: AnyMessageContent, 
+	message: AnyMessageContent,
 	options: MessageContentGenerationOptions
 ) => {
 	let m: WAMessageContent = {}
@@ -254,7 +260,7 @@ export const generateWAMessageContent = async(
 				extContent.previewType = 0
 			} catch(error) { // ignore if fails
 				options.logger?.warn({ trace: error.stack }, 'url generation failed')
-			} 
+			}
 		}
 
 		m.extendedTextMessage = extContent
@@ -263,7 +269,7 @@ export const generateWAMessageContent = async(
 		if(!contactLen) {
 			throw new Boom('require atleast 1 contact', { statusCode: 400 })
 		}
- 
+
 		if(contactLen === 1) {
 			m.contactMessage = WAProto.ContactMessage.fromObject(message.contacts.contacts[0])
 		} else {
@@ -282,7 +288,7 @@ export const generateWAMessageContent = async(
 			message.force
 		)
 	} else if('disappearingMessagesInChat' in message) {
-		const exp = typeof message.disappearingMessagesInChat === 'boolean' ? 
+		const exp = typeof message.disappearingMessagesInChat === 'boolean' ?
 			(message.disappearingMessagesInChat ? WA_DEFAULT_EPHEMERAL : 0) :
 			message.disappearingMessagesInChat
 		m = prepareDisappearingMessageSettingContent(exp)
@@ -307,7 +313,7 @@ export const generateWAMessageContent = async(
 
 			const type = Object.keys(m)[0].replace('Message', '').toUpperCase()
 			buttonsMessage.headerType = ButtonType[type]
-			
+
 			Object.assign(buttonsMessage, m)
 		}
 
@@ -322,7 +328,7 @@ export const generateWAMessageContent = async(
 				hydratedButtons: message.templateButtons
 			}
 		}
-		
+
 		if('text' in message) {
 			templateMessage.hydratedTemplate.hydratedContentText = message.text
 		} else {
@@ -330,7 +336,7 @@ export const generateWAMessageContent = async(
 			if('caption' in message) {
 				templateMessage.hydratedTemplate.hydratedContentText = message.caption
 			}
-			
+
 			Object.assign(templateMessage.hydratedTemplate, m)
 		}
 
@@ -340,7 +346,7 @@ export const generateWAMessageContent = async(
 
 		m = { templateMessage }
 	}
-	
+
 	if('sections' in message && !!message.sections) {
 		const listMessage: proto.IListMessage = {
 			sections: message.sections,
@@ -368,8 +374,8 @@ export const generateWAMessageContent = async(
 }
 
 export const generateWAMessageFromContent = (
-	jid: string, 
-	message: WAMessageContent, 
+	jid: string,
+	message: WAMessageContent,
 	options: MessageGenerationOptionsFromContent
 ) => {
 	if(!options.timestamp) {
@@ -387,7 +393,7 @@ export const generateWAMessageFromContent = (
 		message[key].contextInfo.participant = participant
 		message[key].contextInfo.stanzaId = quoted.key.id
 		message[key].contextInfo.quotedMessage = quoted.message
-		
+
 		// if a participant is quoted, then it must be a group
 		// hence, remoteJid of group must also be entered
 		if(quoted.key.participant || quoted.participant) {
@@ -401,7 +407,7 @@ export const generateWAMessageFromContent = (
 		// and it's not a protocol message -- delete, toggle disappear message
 		key !== 'protocolMessage' &&
 		// already not converted to disappearing message
-		key !== 'ephemeralMessage' 
+		key !== 'ephemeralMessage'
 	) {
 		message[key].contextInfo = {
 			...(message[key].contextInfo || {}),
@@ -459,28 +465,55 @@ export const getContentType = (content: WAProto.IMessage | undefined) => {
 }
 
 /**
+ * Normalizes ephemeral, view once messages to regular message content
+ * Eg. image messages in ephemeral messages, in view once messages etc.
+ * @param content
+ * @returns
+ */
+export const normalizeMessageContent = (content: WAMessageContent): WAMessageContent => {
+	content = content?.ephemeralMessage?.message?.viewOnceMessage?.message ||
+				content?.ephemeralMessage?.message ||
+				content?.viewOnceMessage?.message ||
+				content ||
+				undefined
+	return content
+}
+
+/**
  * Extract the true message content from a message
  * Eg. extracts the inner message from a disappearing message/view once message
  */
 export const extractMessageContent = (content: WAMessageContent | undefined | null): WAMessageContent | undefined => {
-	content = content?.ephemeralMessage?.message || 
-				content?.viewOnceMessage?.message ||
-				content || 
-				undefined
+	const extractFromTemplateMessage = (msg: proto.IHydratedFourRowTemplate | proto.IButtonsMessage) => {
+		if(msg.imageMessage) {
+			return { imageMessage: msg.imageMessage }
+		} else if(msg.documentMessage) {
+			return { documentMessage: msg.documentMessage }
+		} else if(msg.videoMessage) {
+			return { videoMessage: msg.videoMessage }
+		} else if(msg.locationMessage) {
+			return { locationMessage: msg.locationMessage }
+		} else {
+			return { conversation: 'contentText' in msg ? msg.contentText : ('hydratedContentText' in msg ? msg.hydratedContentText : '') }
+		}
+	}
+
+	content = normalizeMessageContent(content)
 
 	if(content?.buttonsMessage) {
-	  const { buttonsMessage } = content
-	  if(buttonsMessage.imageMessage) {
-			return { imageMessage: buttonsMessage.imageMessage }
-	  } else if(buttonsMessage.documentMessage) {
-			return { documentMessage: buttonsMessage.documentMessage }
-	  } else if(buttonsMessage.videoMessage) {
-			return { videoMessage: buttonsMessage.videoMessage }
-	  } else if(buttonsMessage.locationMessage) {
-			return { locationMessage: buttonsMessage.locationMessage }
-	  } else {
-			return { conversation: buttonsMessage.contentText }
-	  }
+	  return extractFromTemplateMessage(content.buttonsMessage!)
+	}
+
+	if(content?.templateMessage?.hydratedFourRowTemplate) {
+		return extractFromTemplateMessage(content?.templateMessage?.hydratedFourRowTemplate)
+	}
+
+	if(content?.templateMessage?.hydratedTemplate) {
+		return extractFromTemplateMessage(content?.templateMessage?.hydratedTemplate)
+	}
+
+	if(content?.templateMessage?.fourRowTemplate) {
+		return extractFromTemplateMessage(content?.templateMessage?.fourRowTemplate)
 	}
 
 	return content
@@ -492,4 +525,43 @@ export const extractMessageContent = (content: WAMessageContent | undefined | nu
 export const getDevice = (id: string) => {
 	const deviceType = id.length > 21 ? 'android' : id.substring(0, 2) === '3A' ? 'ios' : 'web'
 	return deviceType
+}
+
+export const updateMessageWithReceipt = (msg: WAMessage, receipt: MessageUserReceipt) => {
+	msg.userReceipt = msg.userReceipt || []
+	const recp = msg.userReceipt.find(m => m.userJid === receipt.userJid)
+	if(recp) {
+		Object.assign(recp, receipt)
+	} else {
+		msg.userReceipt.push(receipt)
+	}
+}
+
+/**
+ * Downloads the given message. Throws an error if it's not a media message
+ */
+export const downloadMediaMessage = async(message: WAMessage, type: 'buffer' | 'stream', options: MediaDownloadOptions) => {
+	const mContent = extractMessageContent(message.message)
+	if(!mContent) {
+		throw new Boom('No message present', { statusCode: 400, data: message })
+	}
+
+	const contentType = getContentType(mContent)
+	const mediaType = contentType.replace('Message', '') as MediaType
+	const media = mContent[contentType]
+	if(typeof media !== 'object' || !('url' in media)) {
+		throw new Boom(`"${contentType}" message is not a media message`)
+	}
+
+	const stream = await downloadContentFromMessage(media, mediaType, options)
+	if(type === 'buffer') {
+		let buffer = Buffer.from([])
+		for await (const chunk of stream) {
+			buffer = Buffer.concat([buffer, chunk])
+		}
+
+		return buffer
+	}
+
+	return stream
 }
