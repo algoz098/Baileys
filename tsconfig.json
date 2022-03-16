@@ -12,8 +12,9 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
-    "lib": ["es2020", "esnext.array", "DOM"]
+    "lib": ["es2020", "esnext.array", "DOM"],
   },
+  "assets":["**/baileys-version.json"],
   "include": ["./src/**/*.ts"],
   "exclude": ["node_modules", "src/Tests/*", "src/Binary/GenerateStatics.ts"]
 }
